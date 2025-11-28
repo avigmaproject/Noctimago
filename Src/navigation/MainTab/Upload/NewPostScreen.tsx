@@ -74,7 +74,7 @@ const AVATAR =
   'https://upload.wikimedia.org/wikipedia/commons/thumb/b/bc/Unknown_person.jpg/1200px-Unknown_person.jpg';
 
 // ⬇️ put your key here (or pull from env/Config)
-const GOOGLE_PLACES_KEY = 'AIzaSyCUs425jvu7D3T-c3LX8eM2iS5XFYvgFUI';
+
 
 export default function NewPostScreen({ navigation }: any) {
   /* ------------------------ media state ------------------------ */
