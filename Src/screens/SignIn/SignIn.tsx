@@ -1,5 +1,5 @@
 // src/screens/SignIn.tsx
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import {
   Platform,
   KeyboardAvoidingView,
@@ -13,6 +13,7 @@ import {
   Image,
   Pressable,
   Alert,
+  Linking,
 } from 'react-native';
 import {setLoggedIn, setToken} from '../../store/action/auth/action';
 import Feather from 'react-native-vector-icons/Feather';
@@ -20,15 +21,23 @@ import FontAwesome from 'react-native-vector-icons/FontAwesome';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { useDispatch } from 'react-redux';
 // import { setToken } from '../store/authSlice'; // <- Uncomment/adjust if you store token in Redux
-import { register,login } from '../../utils/apiconfig';
-
+import { register,login,Googlesignin } from '../../utils/apiconfig';
+// import {  , scheduleInterstitialAfter } from '../../ads/interstitial';
+import { GoogleSignin, statusCodes } from '@react-native-google-signin/google-signin';
 type Props = {
   navigation: any; // Replace with your navigator type if available
   onForgot?: () => void;
   onGoogle?: () => void;
   onFacebook?: () => void;
 };
-
+import {
+  InterstitialAd,
+  AdEventType,
+  TestIds,
+} from 'react-native-google-mobile-ads';
+const INTERSTITIAL_UNIT_ID = __DEV__
+  ? TestIds.INTERSTITIAL
+  : 'ca-app-pub-2847186072494111/8751364810'; 
 export default function SignIn({
   navigation,
   onForgot,
@@ -42,16 +51,117 @@ export default function SignIn({
   const [loading, setLoading] = useState(false);
 
   const dispatch = useDispatch();
-
+  const [interstitialLoaded, setInterstitialLoaded] = useState(false);
+  const interstitialRef = useRef<InterstitialAd | null>(null);
+  const wantsToShowRef = useRef(false);
+  const timerRef = useRef<NodeJS.Timeout | null>(null);
   const canSubmit = email.trim().length > 3 && pwd.length >= 6;
+  const [user, setUser] = useState<any>(null);
+  useEffect(() => {
+    console.log('[Ad] SignIn: creating interstitial for', INTERSTITIAL_UNIT_ID);
+  
+    const ad = InterstitialAd.createForAdRequest(INTERSTITIAL_UNIT_ID, {
+      requestNonPersonalizedAdsOnly: false,
+    });
+  
+    interstitialRef.current = ad;
+  
+    const unsubscribeLoaded = ad.addAdEventListener(
+      AdEventType.LOADED,
+      () => {
+        console.log('[Ad] Interstitial LOADED ✔ (SignIn)');
+        setInterstitialLoaded(true);
+  
+        // If we already requested to show (after login), show now
+        if (wantsToShowRef.current) {
+          console.log('[Ad] wantsToShowRef = true, showing now');
+          wantsToShowRef.current = false;
+          ad.show();
+          setInterstitialLoaded(false);
+        }
+      },
+    );
+  
+    const unsubscribeError = ad.addAdEventListener(
+      AdEventType.ERROR,
+      (error) => {
+        console.log('[Ad] Interstitial ERROR ❌', error?.message);
+        setInterstitialLoaded(false);
+      },
+    );
+  
+    const unsubscribeClosed = ad.addAdEventListener(
+      AdEventType.CLOSED,
+      () => {
+        console.log('[Ad] Interstitial CLOSED, reloading for next time');
+        setInterstitialLoaded(false);
+        ad.load(); // prepare for next time
+      },
+    );
+  
+    ad.load(); // start loading right away
+  
+    return () => {
+      console.log('[Ad] SignIn: cleanup, unsubscribe interstitial');
+      unsubscribeLoaded();
+      unsubscribeError();
+      unsubscribeClosed();
+    };
+  }, []);
+  
+
+  
+  useEffect(() => {
+    GoogleSignin.configure({
+    scopes: ['https://www.googleapis.com/auth/drive.readonly'],
+    webClientId:
+    '406896981733-hakhrb4g0ad78lq8n010b8oduvlr8ioo.apps.googleusercontent.com',
+    offlineAccess: true,
+    });
+    return () => {};
+    }, []);
+    
+  const signIn = async () => {
+    const id = Date.now().toString();
+await GoogleSignin.signOut();
+
+await GoogleSignin.hasPlayServices();
+const userInfo = await GoogleSignin.signIn();
+console.log('email', userInfo.data.idToken);
+const payload = JSON.stringify({
+  provider:"google",
+  id_token: userInfo.data.idToken,
+});
+console.log("payload",payload)
+const res = await Googlesignin(payload);
+console.log("resss",res)
+if(res.status==='success'){
+  dispatch(setToken(res.token));
+  dispatch(setLoggedIn());
+  if (remember) {
+    await AsyncStorage.setItem('@auth_email', email.trim());
+    await AsyncStorage.setItem('@auth_password', pwd); // ✅ Save password
+  } else {
+    await AsyncStorage.removeItem('@auth_email');
+    await AsyncStorage.removeItem('@auth_password'); // ✅ Remove password if not remember
+  }
+
+}
+   
+  };
+  
+
+  
 
   useEffect(() => {
     // Pre-fill remembered email if present
     (async () => {
       try {
         const saved = await AsyncStorage.getItem('@auth_email');
+        const savedPwd   = await AsyncStorage.getItem('@auth_password');
         if (saved) {
           setEmail(saved);
+          setPwd(savedPwd)
           setRemember(true);
         }
       } catch {
@@ -74,23 +184,40 @@ export default function SignIn({
       console.log('login payload:', payload);
 
       const res = await login(payload);
-      console.log('login response:', res.status);
-  if(res.status==='success'){
-    dispatch(setToken(res.token));
-    dispatch(setLoggedIn());
-    if (remember) {
-      await AsyncStorage.setItem('@auth_email', email.trim());
-      await AsyncStorage.setItem('@auth_password', pwd); // ✅ Save password
-    } else {
-      await AsyncStorage.removeItem('@auth_email');
-      await AsyncStorage.removeItem('@auth_password'); // ✅ Remove password if not remember
-    }
-  
-  }
-  else
-  {
-    Alert.alert('The Email or password is incorrect.');
-  }
+      console.log('login response:', res);
+      // dispatch(setToken(res.token));
+      // dispatch(setLoggedIn());
+      // return 0
+      if (res.status === 'success') {
+        setTimeout(() => {
+          console.log('[Ad] 30s after login, trying to show interstitial');
+          const ad = interstitialRef.current;
+      
+          if (ad && interstitialLoaded) {
+            console.log('[Ad] Ad already loaded, showing now');
+            ad.show();
+            setInterstitialLoaded(false);
+          } else {
+            console.log('[Ad] Ad not loaded yet, mark wantsToShowRef = true');
+            wantsToShowRef.current = true;
+            // It will show automatically when LOADED event fires
+          }
+        }, 30000); // use 5000 for quick testing
+      
+        dispatch(setToken(res.token));
+        dispatch(setLoggedIn());
+      
+        if (remember) {
+          await AsyncStorage.setItem('@auth_email', email.trim());
+          await AsyncStorage.setItem('@auth_password', pwd);
+        } else {
+          await AsyncStorage.removeItem('@auth_email');
+          await AsyncStorage.removeItem('@auth_password');
+        }
+      } else {
+        Alert.alert('The Email or password is incorrect.');
+      }
+      
       
 return 0
       // Accept common shapes: { token }, { userToken }, { data: { token } }, etc.
@@ -120,7 +247,8 @@ return 0
       navigation.replace('Home'); // <- adjust to your app's initial route
     } catch (err: any) {
       console.warn('login error:', err);
-      Alert.alert('Sign In Failed', err?.message ?? 'Please try again.');
+      // Alert.alert('Sign In Failed', err?.message ?? 'Please try again.');
+      Alert.alert('The Email or password is incorrect.');
     } finally {
       setLoading(false);
     }
@@ -198,7 +326,7 @@ return 0
               <Text style={styles.rememberText}>Remember me</Text>
             </Pressable>
 
-            <TouchableOpacity onPress={onForgot} disabled={loading}>
+            <TouchableOpacity  onPress={() => navigation.navigate('ForgotPasswordScreen')} disabled={loading}>
               <Text style={styles.link}>Forgot password?</Text>
             </TouchableOpacity>
           </View>
@@ -223,19 +351,19 @@ return 0
           </View>
 
           {/* Social buttons */}
-          <TouchableOpacity style={styles.socialBtn} onPress={onGoogle} disabled={loading}>
+          <TouchableOpacity style={styles.socialBtn} onPress={ signIn} disabled={loading}>
             <FontAwesome name="google" size={18} color="#ffffff" style={{ marginRight: 10 }} />
             <Text style={styles.socialLabel}>Sign In With Google</Text>
           </TouchableOpacity>
 
-          <TouchableOpacity
+          {/* <TouchableOpacity
             style={[styles.socialBtn, { marginTop: 12 }]}
             onPress={onFacebook}
             disabled={loading}
           >
             <FontAwesome name="facebook" size={20} color="#ffffff" style={{ marginRight: 10 }} />
             <Text style={styles.socialLabel}>Sign In With Facebook</Text>
-          </TouchableOpacity>
+          </TouchableOpacity> */}
 
           {/* Bottom link */}
           <TouchableOpacity
@@ -245,6 +373,16 @@ return 0
           >
             <Text style={styles.bottomLink}>Don’t have an account</Text>
           </TouchableOpacity>
+
+          <View style={{marginTop:20,justifyContent:"center",alignItems:'center'}}>
+    {/* I agree with the{' '} */}
+    <Text
+      style={{ color: "grey", textDecorationLine: 'underline' }}
+      onPress={() => Linking.openURL('https://noctimago.com/privacy-policy/')}
+    >
+      Terms of Service & Privacy Policy
+    </Text>
+  </View>
         </ScrollView>
       </KeyboardAvoidingView>
     </View>

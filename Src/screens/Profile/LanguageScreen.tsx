@@ -1,15 +1,22 @@
-import React, { useState } from 'react';
+// Src/screens/Profile/LanguageScreen.tsx
+import React, { useEffect, useState } from 'react';
 import {
   View,
   Text,
   TouchableOpacity,
-  SafeAreaView,
+
   FlatList,
   StatusBar,
   StyleSheet,
 } from 'react-native';
 import Feather from 'react-native-vector-icons/Feather';
 import { useNavigation } from '@react-navigation/native';
+import { gTranslate } from '../../utils/gtranslate';
+import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
+
+// i18n (dynamic, no JSON)
+import { useAutoI18n } from '../../i18n/AutoI18nProvider';
+import { TText } from '../../i18n/TText';
 
 type Lang = { id: string; label: string; sub: string };
 
@@ -23,14 +30,29 @@ const LANGUAGES: Lang[] = [
 
 export default function LanguageScreen() {
   const navigation = useNavigation();
-  const [selected, setSelected] = useState('en');
+  const { lang, setLang } = useAutoI18n();
+
+  // derive 'en' from 'en-US' etc.
+  const [selected, setSelected] = useState<string>(() => (lang?.split?.('-')[0] || 'en'));
+  useEffect(() => {
+    setSelected(lang?.split?.('-')[0] || 'en');
+  }, [lang]);
+  const onPick = (id: string) => {
+    setSelected(id);          // update UI
+    // setLang(id);              // 🔴 change app language right now
+    // navigation.goBack();   // ← uncomment if you want to close the screen immediately
+  };
+  const onSave = () => {
+    setLang(selected);         // make it global
+    navigation.goBack();       // return to previous screen
+  };
 
   const renderItem = ({ item }: { item: Lang }) => {
     const active = item.id === selected;
     return (
       <TouchableOpacity
         activeOpacity={0.9}
-        onPress={() => setSelected(item.id)}
+        onPress={() => onPick(item.id)}                 // ⬅️ call onPick
         style={[styles.row, active && styles.rowActive]}
       >
         <Text style={styles.rowTitle}>{item.label}</Text>
@@ -41,6 +63,7 @@ export default function LanguageScreen() {
       </TouchableOpacity>
     );
   };
+  
 
   return (
     <SafeAreaView style={styles.container}>
@@ -54,8 +77,11 @@ export default function LanguageScreen() {
         >
           <Feather name="arrow-left" size={22} color="#fff" />
         </TouchableOpacity>
-        <Text style={styles.headerTitle}>Language</Text>
-        <View style={{ width: 22 }} />{/* spacer */}
+
+        {/* Live preview: translate using currently selected language */}
+        <TText style={styles.headerTitle} langOverride={selected}>Language</TText>
+
+        <View style={{ width: 22 }} />
       </View>
 
       {/* Language List */}
@@ -65,18 +91,17 @@ export default function LanguageScreen() {
         renderItem={renderItem}
         contentContainerStyle={styles.listContent}
       />
-
+    
+    
       {/* Save Button */}
       <View style={styles.footer}>
         <TouchableOpacity
-          onPress={() => {
-            // Save logic here (e.g. i18n.changeLanguage(selected))
-            navigation.goBack(); // go back after save
-          }}
+          onPress={onSave}
           style={styles.saveBtn}
           activeOpacity={0.95}
         >
-          <Text style={styles.saveTxt}>Save Change</Text>
+          {/* Live preview: translate using currently selected language */}
+          <TText style={styles.saveTxt} langOverride={selected}>Save Change</TText>
         </TouchableOpacity>
       </View>
     </SafeAreaView>

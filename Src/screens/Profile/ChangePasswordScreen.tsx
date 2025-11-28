@@ -4,15 +4,19 @@ import {
   View,
   Text,
   StyleSheet,
-  SafeAreaView,
+
   TextInput,
   TouchableOpacity,
   KeyboardAvoidingView,
   Platform,
   StatusBar,
+  Alert
 } from 'react-native';
-import Ionicons from 'react-native-vector-icons/Ionicons';
+import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 
+import Ionicons from 'react-native-vector-icons/Ionicons';
+import { changepassword, sendnotify } from '../../utils/apiconfig';
+import { useDispatch, useSelector } from 'react-redux';
 const COLORS = {
   bg: '#0B0C0F',
   surface: '#101217',
@@ -34,11 +38,12 @@ export default function ChangePasswordScreen({ navigation }: any) {
   const [oldPwd, setOldPwd] = useState('');
   const [newPwd, setNewPwd] = useState('');
   const [confirmPwd, setConfirmPwd] = useState('');
-
+  const userprofile = useSelector((state: any) => state.authReducer.userprofile);
+  console.log("profile===",userprofile)
   const [showOld, setShowOld] = useState(false);
   const [showNew, setShowNew] = useState(false);
   const [showConfirm, setShowConfirm] = useState(false);
-
+  const token = useSelector((state: any) => state.authReducer.token);
   // ---- Strength rules (tweak as you like)
   const rules = useMemo(() => {
     const len = newPwd.length >= 8;
@@ -55,11 +60,60 @@ export default function ChangePasswordScreen({ navigation }: any) {
 
   const match = newPwd.length > 0 && confirmPwd.length > 0 && newPwd === confirmPwd;
   const canSubmit = oldPwd.length > 0 && passedCount >= 3 && match; // enable when strong enough + match
-
-  const onSubmit = () => {
+  const SendNotification = async (
+   
+  
+  ) => {
+    try {
+      const payload = JSON.stringify({
+        UserToken: "",
+        message:"Password changed successfully",
+        msgtitle: "Password changed successfully",
+        User_PkeyID: userprofile?.ID,
+        UserID: userprofile?.ID,
+        NTN_C_L: 2,
+        NTN_Sender_Name:userprofile.meta.first_name,
+        NTN_Sender_Img:userprofile.meta.profile_image,
+        NTN_Reciever_Name:"",
+        NTN_Reciever_Img:"",
+        NTN_UP_PkeyID:0,
+        NTN_UP_Path:""
+      });
+      console.log("sendnotify",payload)
+      await sendnotify(payload, token);
+      console.log("sendnotify",sendnotify)
+    } catch (err: any) {
+      console.warn("Notify error:", err);
+    }
+  };
+  const onSubmit = async() => {
     if (!canSubmit) return;
-    // TODO: call API to change password
-    // await changePassword({ oldPwd, newPwd });
+    try {
+      const payload = JSON.stringify({
+        current_password:oldPwd,
+        new_password:confirmPwd,
+         });
+      console.log("payload",payload,token)
+
+      const res = await changepassword(payload, token);
+      console.log('[changepassword] res =', res);
+
+if(res.status==='success')
+  {
+    SendNotification()
+    Alert.alert("Password changed successfully")
+    navigation.goBack()
+  }
+    
+    } catch (error: any) {
+      console.log('[EditProfile] error =', error);
+      Alert.alert(
+        "Password Error",
+        "Your old password does not match. Please try again.",
+        [{ text: "OK" }]
+      );
+      
+    }
   };
 
   return (

@@ -5,7 +5,9 @@ import Splash from '../../screens/Splash/SplashScreen';
 import SignIn from '../../screens/SignIn/SignIn';
 import CreateAccountScreen from '../../screens/Signup/SignupScreen';
 import Onboarding from '../../screens/Welcome/Onboarding';
-
+import ForgotPasswordScreen from '../../screens/ForgotPassword/ForgotPasswordScreen';
+import PasswordResetSentScreen from '../../screens/ForgotPassword/PasswordResetSentScreen';
+import ResetPasswordScreen from '../../screens/ForgotPassword/ResetPasswordScreen';
 const Stack = createStackNavigator();
 
 export default function AuthNavigation() {
@@ -28,6 +30,9 @@ export default function AuthNavigation() {
       <Stack.Screen name="Onboarding" component={Onboarding} />
       <Stack.Screen name="SignIn" component={SignIn} />
       <Stack.Screen name="CreateAccountScreen" component={CreateAccountScreen} />
+      <Stack.Screen name="ForgotPasswordScreen" component={ForgotPasswordScreen} />
+      <Stack.Screen name="PasswordResetSentScreen" component={PasswordResetSentScreen} />
+      <Stack.Screen name="ResetPasswordScreen" component={ResetPasswordScreen} />
     </Stack.Navigator>
   );
 }

@@ -1,9 +1,22 @@
 <resources>
+  <!-- Base application theme -->
+  <style name="AppTheme" parent="Theme.AppCompat.DayNight.NoActionBar">
+    <!-- keep your existing line -->
+    <item name="android:editTextBackground">@drawable/rn_edit_text_material</item>
 
-    <!-- Base application theme. -->
-    <style name="AppTheme" parent="Theme.AppCompat.DayNight.NoActionBar">
-        <!-- Customize your theme here. -->
-        <item name="android:editTextBackground">@drawable/rn_edit_text_material</item>
-    </style>
+    <!-- IMPORTANT: make window non-translucent so IME resize works -->
+    <item name="android:windowTranslucentStatus">false</item>
+    <item name="android:windowTranslucentNavigation">false</item>
+    <item name="android:windowIsTranslucent">false</item>
 
+    <!-- Draw system bar backgrounds (required when not translucent) -->
+    <item name="android:windowDrawsSystemBarBackgrounds">true</item>
+
+    <!-- Optional but recommended: give bars a solid color (use your palette) -->
+    <item name="android:statusBarColor">@android:color/black</item>
+    <item name="android:navigationBarColor">@android:color/black</item>
+
+    <!-- Make sure the layout is NOT requesting edge-to-edge via theme -->
+    <item name="android:windowFullscreen">false</item>
+  </style>
 </resources>

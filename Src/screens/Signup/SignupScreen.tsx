@@ -13,7 +13,10 @@ import {
   Alert,
   Image,
   ActivityIndicator,
+  Linking
 } from 'react-native';
+import { AvoidSoftInput, AvoidSoftInputView } from 'react-native-avoid-softinput';
+
 import Feather from 'react-native-vector-icons/Feather';
 import { register } from '../../utils/apiconfig'; // ⬅️ uses your API helper
 import {setLoggedIn, setToken} from '../../store/action/auth/action';
@@ -45,69 +48,69 @@ export default function CreateAccountScreen({ navigation }: any) {
   const dispatch = useDispatch();
   const strength = useMemo(() => evaluatePassword(pwd), [pwd]);
   const strengthMeta = useMemo(() => strengthDescriptor(strength), [strength]);
+  const [acceptedTerms, setAcceptedTerms] = useState(true);
 
   const canSubmit =
     fullName.trim().length > 1 &&
     isValidEmail(email) &&
     strength >= 2 && // require at least "Fair"
-    pwd === pwd2 &&
+    pwd === pwd2 
+    && acceptedTerms &&
     !loading;
 
-  const onSubmit = async () => {
-    if (!canSubmit) {
-      Alert.alert('Check your details', 'Please fix the highlighted fields.');
-      return;
-    }
-
-    try {
-      setLoading(true);
-
-      // shape your backend expects — adjust keys if needed
-      const payload = JSON.stringify({
-        username: fullName,
-        email: email,
-        password: pwd,
-      });
-
-      // API call
-      console.log("data",payload)
-      const res = await register(payload);
-      console.log('register response:', res);
-      console.log('login response:', res);
-    //   dispatch(setToken(res.userToken));
-      dispatch(setLoggedIn());
-return 0
-      // Accept common success shapes:
-      const success =
-        res?.success === true ||
-        !!res?.userId ||
-        !!res?.id ||
-        !!res?.data?.id;
-
-      if (!success) {
-        // surface backend message if present
-        const message =
-          res?.message || res?.error || 'Could not create account.';
-        throw new Error(message);
+    const onSubmit = async () => {
+      if (!canSubmit) {
+        Alert.alert('Check your details', 'Please fix the highlighted fields.');
+        return;
       }
-
-      Alert.alert('🎉 Account created', 'You can now sign in.', [
-        {
-          text: 'OK',
-          onPress: () => navigation.replace('SignIn'),
-        },
-      ]);
-    } catch (err: any) {
-      console.warn('register error:', err);
-      Alert.alert('Sign up failed', err?.message ?? 'Please try again.');
-    } finally {
-      setLoading(false);
-    }
-  };
+      if (!acceptedTerms) {
+        Alert.alert('Agree to terms', 'Please accept the Terms to continue.');
+        return;
+      }
+      
+      setLoading(true);
+  
+      try {
+        const payload = {
+          username: fullName,
+          email,
+          password: pwd,
+        };
+    
+        console.log('register payload:', payload);
+    
+        const res = await register(payload); // make sure register uses axios.post
+        console.log('register response:', res);
+  
+        if (res?.status === 'success') {
+          dispatch(setToken(res?.token));
+          dispatch(setLoggedIn());
+          return;
+        }
+    
+        // fallback if not success but no throw
+        Alert.alert('Sign up failed', res.data?.message ?? 'Please try again.');
+      } catch (error: any) {
+        console.warn('register error:', error);
+    
+        // 🔑 Extract error message from API
+        const message =
+          error?.response?.data?.message ||
+          error?.response?.data?.error ||
+          error?.message ||
+          'Sign up failed. Please try again.';
+    
+        Alert.alert('Sign up failed', message);
+      } finally {
+        setLoading(false);
+      }
+    };
+    
+    
 
   return (
     <SafeAreaView style={styles.safe}>
-      <KeyboardAvoidingView
+      <AvoidSoftInputView
         behavior={Platform.OS === 'ios' ? 'padding' : undefined}
         style={{ flex: 1 }}
         keyboardVerticalOffset={24}
@@ -115,6 +118,8 @@ return 0
         <ScrollView
           contentContainerStyle={styles.scroll}
           keyboardShouldPersistTaps="handled"
+        
+
         >
           {/* Logo */}
           <View style={styles.logoRow}>
@@ -190,6 +195,33 @@ return 0
             textContentType="newPassword"
             error={pwd2.length > 0 && pwd2 !== pwd}
           />
+<View style={{ flexDirection:'row', alignItems:'center', marginTop:12 }}>
+  <TouchableOpacity
+    onPress={() => setAcceptedTerms(p => !p)}
+    style={{
+      width:20,
+      height:20,
+      borderRadius:4,
+      borderWidth:1,
+      borderColor:'#32343A',
+      alignItems:'center',
+      justifyContent:'center',
+      marginRight:8,
+      backgroundColor: acceptedTerms ? 'red' : '#1A1C21',
+    }}>
+    {acceptedTerms && <Feather name="check" size={14} color="#000" />}
+  </TouchableOpacity>
+
+  <Text style={{ flex:1, color:'grey', fontSize:12 }}>
+    I agree to the{' '}
+    <Text
+      style={{ textDecorationLine:'underline', color:'#C7CAD1' }}
+      onPress={() => Linking.openURL('https://noctimago.com/privacy-policy/')}
+    >
+      Terms of Service & Privacy Policy
+    </Text>
+  </Text>
+</View>
 
           {/* CTA */}
           <TouchableOpacity
@@ -214,7 +246,7 @@ return 0
             <Text style={styles.link}>I already have an account</Text>
           </TouchableOpacity>
         </ScrollView>
-      </KeyboardAvoidingView>
+      </AvoidSoftInputView>
     </SafeAreaView>
   );
 }
@@ -350,7 +382,7 @@ function strengthDescriptor(score: number) {
 
 const styles = StyleSheet.create({
   safe: { flex: 1, backgroundColor: COLORS.bg },
-  scroll: { paddingHorizontal: 24, paddingBottom: 32 },
+  scroll: { paddingHorizontal: 24, paddingBottom: 100 },
   logoRow: { marginTop: 8, justifyContent: 'center' },
   title: {
     marginTop: 24,

@@ -1,7 +1,7 @@
 import axios from 'axios';
 import {API} from './baseurl';
-// import messaging from '@react-native-firebase/messaging';
-// import firebase from '@react-native-firebase/app';
+import messaging from '@react-native-firebase/messaging';
+import firebase from '@react-native-firebase/app';
 import {Platform, PermissionsAndroid, Linking} from 'react-native';
 const axiosTiming = instance => {
   instance.interceptors.request.use(request => {
@@ -42,6 +42,58 @@ export const register = async data => {
       throw error;
     });
 };
+export const Googlesignin = async data => {
+  return axios(API.GOOGLE_SIGNIN, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    data,
+  })
+    .then(response => response.data)
+    .catch(error => {
+      throw error;
+    });
+};
+export const forgotpassword = async data => {
+  return axios(API.FORGOTTPASSWORD, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    data,
+  })
+    .then(response => response.data)
+    .catch(error => {
+      throw error;
+    });
+};
+export const resetpassword = async data => {
+  return axios(API.RESETPASSWORD, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    data,
+  })
+    .then(response => response.data)
+    .catch(error => {
+      throw error;
+    });
+};
+export const allusers = async  ()=> {
+  return axios(API.ALL_USER, {
+    method: 'GET',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    
+  })
+    .then(response => response.data)
+    .catch(error => {
+      throw error;
+    });
+};
 export const profile = async ( access_token) => {
   return axios(API.USERPROFILE, {
     method: 'GET',
@@ -70,8 +122,8 @@ export const updateprofile = async (data, access_token) => {
       throw error;
     });
 };
-export const getuserhome = async (data, access_token) => {
-  return axios(API.GET_USER_HOME, {
+export const createpost = async (data, access_token) => {
+  return axios(API.ADD_Post, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
@@ -82,6 +134,126 @@ export const getuserhome = async (data, access_token) => {
     .then(response => response.data)
     .catch(error => {
       console.log('errorr comes');
+      throw error;
+    });
+};
+export const add_friend  = async (data, access_token) => {
+  return axios(API.ADD_FRIEND, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: 'Bearer ' + access_token,
+    },
+    data,
+  })
+    .then(response => response.data)
+    .catch(error => {
+      console.log('errorr comes');
+      throw error;
+    });
+};
+export const un_friend  = async (data, access_token) => {
+  return axios(API.UN_FRIEND, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: 'Bearer ' + access_token,
+    },
+    data,
+  })
+    .then(response => response.data)
+    .catch(error => {
+      console.log('errorr comes');
+      throw error;
+    });
+};
+export const getpostbyuserid = async (data, access_token) => {
+  return axios(API.GET_POST_BY_USERID, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: 'Bearer ' + access_token,
+    },
+    data,
+  })
+    .then(response => response.data)
+    .catch(error => {
+      console.log('errorr comes');
+      throw error;
+    });
+};
+export const changepassword = async (data, access_token) => {
+  return axios(API.CHANGE_PASSWORD, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: 'Bearer ' + access_token,
+    },
+    data,
+  })
+    .then(response => response.data)
+    .catch(error => {
+      console.log('errorr comes');
+      throw error;
+    });
+};
+export const sendnotify = async (data, access_token) => {
+  return axios(API.SEND_NOTIFICATION, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: 'Bearer ' + access_token,
+    },
+    data,
+  })
+    .then(response => response.data)
+    .catch(error => {
+      console.log('errorr comes');
+      throw error;
+    });
+};
+export const getnotify = async (data, access_token) => {
+  return axios(API.GET_NOTIFICATION, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: 'Bearer ' + access_token,
+    },
+    data,
+  })
+    .then(response => response.data)
+    .catch(error => {
+      console.log('errorr comes');
+      throw error;
+    });
+};
+export const readnotify = async (data, access_token) => {
+  return axios(API.READ_NOTIFICATION, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: 'Bearer ' + access_token,
+    },
+    data,
+  })
+    .then(response => response.data)
+    .catch(error => {
+      console.log('errorr comes');
+      throw error;
+    });
+};
+export const getallpost = async ( access_token) => {
+  console.log("access_token",access_token)
+  return axios(API.GET_ALL_POST, {
+    method: 'GET',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: 'Bearer ' + access_token,
+    },
+    
+  })
+    .then(response => response.data)
+    .catch(error => {
       throw error;
     });
 };
@@ -269,16 +441,7 @@ export const getuserfollowerdata = async (data, access_token) => {
       throw error;
     });
 };
-export const forgotpassword = async data => {
-  return axios(API.FORGOT_PASSWORD, {
-    method: 'POST',
-    data,
-  })
-    .then(response => response.data)
-    .catch(error => {
-      throw error;
-    });
-};
+
 export const getusermasterdata = async (data, access_token) => {
   return axios(API.GET_USER_MASTER_DATA, {
     method: 'POST',
@@ -355,24 +518,24 @@ export const getRtmAccessToken = async data => {
       throw error;
     });
 };
-// export const getFcmToken = async () => {
-//   await messaging().deleteToken();
-//   const fcmToken = await firebase.messaging().getToken();
-//   console.log('fcmToken', fcmToken);
-//   return fcmToken;
-// };
-// export const requestUserPermission = async () => {
-//   let authStatus = await firebase.messaging().hasPermission();
-//   if (
-//     authStatus !== firebase.messaging.AuthorizationStatus.AUTHORIZED ||
-//     messaging.AuthorizationStatus.PROVISIONAL
-//   ) {
-//     authStatus = await firebase.messaging().requestPermission();
-//   }
-//   if (authStatus === firebase.messaging.AuthorizationStatus.AUTHORIZED) {
-//     return authStatus;
-//   }
-// };
+export const getFcmToken = async () => {
+  await messaging().deleteToken();
+  const fcmToken = await firebase.messaging().getToken();
+  console.log('fcmToken', fcmToken);
+  return fcmToken;
+};
+export const requestUserPermission = async () => {
+  let authStatus = await firebase.messaging().hasPermission();
+  if (
+    authStatus !== firebase.messaging.AuthorizationStatus.AUTHORIZED ||
+    messaging.AuthorizationStatus.PROVISIONAL
+  ) {
+    authStatus = await firebase.messaging().requestPermission();
+  }
+  if (authStatus === firebase.messaging.AuthorizationStatus.AUTHORIZED) {
+    return authStatus;
+  }
+};
 export const OpenURLButton = async url => {
   return Linking.openURL(url);
   // const url =

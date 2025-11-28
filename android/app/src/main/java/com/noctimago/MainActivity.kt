@@ -4,6 +4,8 @@ import com.facebook.react.ReactActivity
 import com.facebook.react.ReactActivityDelegate
 import com.facebook.react.defaults.DefaultNewArchitectureEntryPoint.fabricEnabled
 import com.facebook.react.defaults.DefaultReactActivityDelegate
+import android.os.Bundle
+import androidx.core.view.WindowCompat
 
 class MainActivity : ReactActivity() {
 
@@ -12,7 +14,10 @@ class MainActivity : ReactActivity() {
    * rendering of the component.
    */
   override fun getMainComponentName(): String = "Noctimago"
-
+override fun onCreate(savedInstanceState: Bundle?) {
+  super.onCreate(null)
+  WindowCompat.setDecorFitsSystemWindows(getWindow(), true);
+   }
   /**
    * Returns the instance of the [ReactActivityDelegate]. We use [DefaultReactActivityDelegate]
    * which allows you to enable New Architecture with a single boolean flags [fabricEnabled]

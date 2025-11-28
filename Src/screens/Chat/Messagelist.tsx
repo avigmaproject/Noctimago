@@ -1,4 +1,3 @@
-// src/screens/MessageList.tsx
 import React, { useEffect, useMemo, useState, useCallback } from "react";
 import {
   View,
@@ -10,12 +9,36 @@ import {
   StatusBar,
   Alert,
   ActivityIndicator,
+  TextInput,
+  RefreshControl,
+  Modal,
+  KeyboardAvoidingView,
+  ScrollView,
+  Platform,
 } from "react-native";
 import firestore from "@react-native-firebase/firestore";
 import Feather from "react-native-vector-icons/Feather";
 import AntDesign from "react-native-vector-icons/AntDesign";
 import { useSelector } from "react-redux";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
+import Avatar from "../../utils/Avatar";
+import { useFocusEffect } from "@react-navigation/native";
+import AsyncStorage from "@react-native-async-storage/async-storage";
+
+// store reads per user key so you don’t mix profiles (same device, different logins)
+const storageKeyFor = (myKey: string) => `groupReads:${myKey}`;
+
+async function loadPersistedReads(myKey: string) {
+  try {
+    const s = await AsyncStorage.getItem(storageKeyFor(myKey));
+    return s ? (JSON.parse(s) as Record<string, number>) : {};
+  } catch { return {}; }
+}
+
+async function savePersistedReads(myKey: string, map: Record<string, number>) {
+  try { await AsyncStorage.setItem(storageKeyFor(myKey), JSON.stringify(map)); } catch {}
+}
+
 
 /* ---------- Theme ---------- */
 const COLORS = {
@@ -25,18 +48,21 @@ const COLORS = {
   text: "#EDEDF4",
   sub: "#9A9AA5",
   red: "#F44336",
+  pill: "#1A1B25",
+  primary: "#F44336",
 };
-const DUMMY_AVATAR = "https://i.pravatar.cc/150?img=1";
+const DUMMY_AVATAR =
+  "";
 
 /* ---------- Types ---------- */
 type Thread = {
-  id: string;                 // document id (sorted "my-other")
-  send: string[];             // ["2455", "2631"]
+  id: string;
+  send: string[];
   lastmsg?: string;
-  createdAt?: number;
+  createdAt?: any;
+  updatedAt?: any;
   read?: boolean;
 
-  // both sides saved by Chat screen:
   senderusename?: string;
   reciverusename?: string;
   senderavatar?: string;
@@ -45,15 +71,40 @@ type Thread = {
   recivertoken?: string;
   senderuserid?: number | string;
   reciveruserid?: number | string;
-
+  
   sentBy?: string;
   sentTo?: string;
 };
 
+type WPUser = {
+  ID: number | string;
+  display_name?: string;
+  username?: string;
+  email?: string;
+  profile_image?: string;
+};
+
+type Group = {
+  id: string;
+  name: string;
+  members: string[];
+  avatar?: string;
+  createdAt?: any;
+  updatedAt?: any;
+  updatedMs?: number;                 // ✅
+  lastmsg?: string;
+  createdBy: string;
+  lastSentBy?: string;
+  reads?: Record<string, any>;
+  readsMs?: Record<string, number>;   // ✅
+  wm?: Record<string, number>;        // ✅
+};
+
+
 export default function MessageList({ navigation }: any) {
   const insets = useSafeAreaInsets();
 
-  // ---- my id from Redux (same derivation you used in Chat) ----
+  /* ---- my id ---- */
   const userprofile = useSelector((s: any) => s.authReducer.userprofile);
   const myUid = String(
     userprofile?.ID ??
@@ -63,12 +114,151 @@ export default function MessageList({ navigation }: any) {
       ""
   );
 
+  const [tab, setTab] = useState<"chats" | "people" | "groups">("chats");
+// put these near your other useState declarations (top of component)
+const [persistedReads, setPersistedReads] = useState<Record<string, number>>({});
+const [persistReady, setPersistReady] = useState(false);
+
+  // CHATS
   const [threads, setThreads] = useState<Thread[]>([]);
   const [loading, setLoading] = useState(true);
 
+  // PEOPLE
+  const [people, setPeople] = useState<WPUser[]>([]);
+  const [peopleLoading, setPeopleLoading] = useState(false);
+  const [peopleRefreshing, setPeopleRefreshing] = useState(false);
+  const [query, setQuery] = useState("");
+
+  // GROUPS
+  const [groups, setGroups] = useState<Group[]>([]);
+  const [groupsLoading, setGroupsLoading] = useState(true);
+
+  // CREATE GROUP modal
+  const [groupModal, setGroupModal] = useState(false);
+  const [groupName, setGroupName] = useState("");
+  const [selectedUserIds, setSelectedUserIds] = useState<Set<string>>(new Set());
+  const [groupQuery, setGroupQuery] = useState("");
+
   const db = firestore();
 
-  // helper: compute the OTHER id in a thread
+  /* ---------- Helpers ---------- */
+
+  
+  const toMillis = (v: any) => {
+    if (!v) return 0;
+    if (typeof v?.toDate === "function") return v.toDate().getTime();
+    if (typeof v === "number") return v;
+    const t = Date.parse(v as any); return isNaN(t) ? 0 : t;
+  };
+  const myIdCandidates = useMemo(() => {
+    const u = userprofile || {};
+    return [
+      u?.ID, u?.user?.id, u?.User_PkeyID, u?.User_Firebase_UID,
+      String(u?.ID ?? ""), String(u?.user?.id ?? ""), String(u?.User_PkeyID ?? ""), String(u?.User_Firebase_UID ?? "")
+    ].map(x => String(x || "")).filter(Boolean);
+  }, [userprofile]);
+  
+  const pickMyGroupKey = useCallback((g: any): string => {
+    const keys = new Set([
+      ...Object.keys(g?.reads || {}),
+      ...Object.keys(g?.readsMs || {}),
+      ...Object.keys(g?.wm || {}),
+    ]);
+    const hit = myIdCandidates.find(k => keys.has(k));
+    return hit || myIdCandidates[0] || "";
+  }, [myIdCandidates]);
+  const isGroupUnread = useCallback((g: Group) => {
+    if (!g.lastmsg) return false;
+  
+    const myKey = pickMyGroupKey(g);
+    if (!myKey) return false;
+  
+    if (String((g as any).lastSentBy || '') === String(myKey)) return false;
+  
+    const updated = Math.max(
+      toMillis(g.updatedAt || g.createdAt),
+      Number((g as any).updatedMs || 0)
+    );
+  
+    const seenPersist = persistReady ? (persistedReads[g.id] || 0) : 0;
+    const seenSrv     = toMillis((g as any).reads?.[myKey]);
+    const seenMs      = Number((g as any).readsMs?.[myKey] || 0);
+    const wmark       = Number((g as any).wm?.[myKey] || 0);
+  
+    const seen = Math.max(seenPersist, seenSrv, seenMs, wmark);
+    return updated > 0 && updated - seen > 150;
+  }, [pickMyGroupKey, persistedReads, persistReady]);
+  
+  useEffect(() => {
+    if (!myUid || !groups.length || !persistReady) return;
+  
+    const batch = firestore().batch();
+    let dirty = false;
+  
+    groups.forEach(g => {
+      const myKey     = pickMyGroupKey(g);
+      const updated   = Math.max(toMillis(g.updatedAt || g.createdAt), Number((g as any).updatedMs || 0));
+      const seenSrv   = toMillis((g as any).reads?.[myKey]);
+      const seenMs    = Number((g as any).readsMs?.[myKey] || 0);
+      const seenCache = Number(persistedReads[g.id] || 0);
+      const bestSeen  = Math.max(seenMs, seenCache);
+  
+      // If cache says we’ve seen it and server read is missing, backfill.
+      if (bestSeen && bestSeen >= updated && !seenSrv) {
+        const ref = firestore().collection('groups').doc(g.id);
+        batch.set(ref, {
+          [`reads.${myKey}`]: firestore.FieldValue.serverTimestamp(),
+          [`readsMs.${myKey}`]: bestSeen,
+          [`wm.${myKey}`]: bestSeen,
+        }, { merge: true });
+        dirty = true;
+      }
+    });
+  
+    if (dirty) batch.commit().catch(e => console.warn('[hydrate reads] FAIL', e?.code, e?.message));
+  }, [groups, myUid, persistedReads, persistReady, pickMyGroupKey]);
+    
+  
+    // or [pickMyGroupKey, localReads] if not persisting
+  
+  
+  // All possible user ID variants
+
+  
+  
+  const [localReads, setLocalReads] = useState<Record<string, number>>({});
+  
+
+  
+  
+  
+  
+  // persisted “last seen” per groupId
+
+// load on focus (or mount) using the picked key from any group (or first candidate)
+
+
+  
+  useEffect(() => {
+    const dbg = groups.map(g => {
+      const updatedSrv = toMillis(g.updatedAt || g.createdAt);
+      const updatedMs  = Number((g as any).updatedMs || 0);
+      const seenSrv    = toMillis(g.reads?.[myUid]);
+      const seenMs     = Number((g as any).readsMs?.[myUid] || 0);
+      const seenLoc    = localReads[g.id] || 0;
+      const updated    = Math.max(updatedSrv, updatedMs);
+      const seen       = seenSrv || seenMs || seenLoc;
+      return {
+        id: g.id,
+        updatedSrv, updatedMs, updated,
+        seenSrv, seenMs, seenLoc, seen,
+        unread: updated > 0 && updated - seen > 1500,
+      };
+    });
+    console.log('[groups unread dbg]', JSON.stringify(dbg, null, 2));
+  }, [groups, localReads, myUid]);
+  
+
   const getOtherId = useCallback(
     (t: Thread) => {
       const arr = (t.send || []).map(String);
@@ -77,20 +267,183 @@ export default function MessageList({ navigation }: any) {
     [myUid]
   );
 
-  // live subscription to my conversations
+  const isThreadUnread = (t: Thread) => {
+    const me = String(myUid);
+    if (!me) return false;
+  
+    // If there is no last message text, don't show a dot
+    if (!t.lastmsg || !t.lastmsg.trim()) return false;
+  
+    const any: any = t;
+    const lastSender = String(t.sentBy ?? "");
+  
+    // 1) If *I* sent the last message, never show unread for me
+    if (lastSender === me) return false;
+  
+    // 2) Compare lastRead timestamp vs updatedAt
+    const updatedMs = toMillis(t.updatedAt || t.createdAt);
+    const rawLastRead = any.lastRead?.[me];
+    const lastReadMs = toMillis(rawLastRead);
+  
+    // if I have a lastRead and it's at/after updated, treat as read
+    if (lastReadMs && updatedMs && lastReadMs >= updatedMs - 500) {
+      return false;
+    }
+  
+    // 3) New schema: explicit readMap flag
+    if (any.readMap && any.readMap[me] === true) {
+      return false;
+    }
+  
+    // 4) Old schema: single "read" boolean
+    if (t.read === true) return false;
+  
+    // Otherwise: treat as unread (last message from other user, no read proof)
+    return true;
+  };
+  
+  
+  useEffect(() => {
+    console.log(
+      "[threads dbg]",
+      threads.map(t => ({
+        id: t.id,
+        sentBy: t.sentBy,
+        read: t.read,
+        readMap: (t as any).readMap,
+        unread: isThreadUnread(t),
+        me: myUid,
+      }))
+    );
+  }, [threads, myUid]);
+  
+
+  // const isGroupUnread = (g: Group) => {
+  //   const updated = toMillis(g.updatedAt || g.createdAt);
+  //   const myRead  = toMillis(g.reads?.[myUid]);
+  //   const lastBy  = String(g.lastSentBy || "");
+  //   // 1.5s buffer to avoid race
+  //   return lastBy !== String(myUid) && (updated - myRead) > 1500;
+  // };
+  
+
+  /* ---------- Live: 1:1 threads ---------- */
+  // After returning from GroupChat, normalize localReads from latest snapshot
+  useFocusEffect(
+    useCallback(() => {
+      setLocalReads(prev => {
+        const next = { ...prev };
+        groups.forEach(g => {
+          const myKey   = pickMyGroupKey(g);                                 // ✅
+          const snapRead = Math.max(
+            Number((g as any).readsMs?.[myKey] || 0),                         // ✅
+            toMillis(g.reads?.[myKey])                                        // ✅
+          );
+          next[g.id] = Math.max(prev[g.id] || 0, snapRead);
+        });
+        return next;
+      });
+    }, [groups, pickMyGroupKey])                                              // ✅
+  );
+  // Optional: bulk mark all 1:1 as read on focus of MessageList
+// useFocusEffect(useCallback(() => {
+//   threads.forEach(t => {
+//     if (isThreadUnread(t)) {
+//       db.collection('messagelist').doc(t.id).set({ read: true }, { merge: true }).catch(() => {});
+//     }
+//   });
+// }, [threads]));
+useEffect(() => {
+  const chatUnread  = threads.filter(isThreadUnread).length;
+  const groupUnread = groups.filter(isGroupUnread).length;
+  const total = chatUnread + groupUnread;
+
+  const stack = navigation.getParent?.();
+  const tabs  = stack?.getParent?.() ?? stack;
+  tabs?.setParams?.({ chatUnreadCount: total });
+}, [threads, groups, isThreadUnread, isGroupUnread, navigation]);
+
+useFocusEffect(useCallback(() => {
+  const chatUnread  = threads.filter(isThreadUnread).length;
+  const groupUnread = groups.filter(isGroupUnread).length;
+  const total = chatUnread + groupUnread;
+
+  const stack = navigation.getParent?.();
+  const tabs  = stack?.getParent?.() ?? stack;
+  tabs?.setParams?.({ chatUnreadCount: total });
+}, [threads, groups, isThreadUnread, isGroupUnread, navigation]));
+
+
+  useEffect(() => {
+    const gIds = groups.filter(isGroupUnread).map(g => g.id);
+    const tIds = threads.filter(isThreadUnread).map(t => t.id);
+    console.log('[badge debug]', { groupUnreadIds: gIds, threadUnreadIds: tIds });
+  }, [groups, threads, isGroupUnread]);
+  
+  useEffect(() => {
+    if (!groups.length) return;
+  
+    const batch = firestore().batch();
+    let dirty = false;
+  
+    groups.forEach((g) => {
+      const myKey = pickMyGroupKey(g);
+      const updatedSrv = toMillis(g.updatedAt || g.createdAt);
+      const updatedMs = Number((g as any).updatedMs || 0);
+      const updated = Math.max(updatedSrv, updatedMs);
+      const seenSrv = toMillis(g.reads?.[myKey]);
+      const seenMs = Number((g as any).readsMs?.[myKey] || 0);
+  
+      if (!seenSrv && seenMs >= updated) {
+        batch.set(
+          firestore().collection("groups").doc(g.id),
+          { [`reads.${myKey}`]: firestore.FieldValue.serverTimestamp() },
+          { merge: true }
+        );
+        dirty = true;
+      }
+    });
+  
+    if (dirty) batch.commit().then(() => console.log("[repair reads] OK"));
+  }, [groups, pickMyGroupKey]);
+  
+  useEffect(() => {
+    if (!myUid || groups.length === 0) return;
+  
+    const batch = firestore().batch();
+    let dirty = false;
+  
+    groups.forEach(g => {
+      const updated = toMillis(g.updatedAt || g.createdAt);
+      const seenSrv = toMillis(g.reads?.[myUid]);                 // 0 if missing
+      const seenMs  = Number((g as any).readsMs?.[myUid] || 0);
+  
+      // If we previously recorded a client read (readsMs) that covers the update,
+      // but server read is missing, backfill a server read now.
+      if (!seenSrv && seenMs && seenMs >= updated) {
+        const ref = firestore().collection("groups").doc(g.id);
+        batch.set(ref, { [`reads.${myUid}`]: firestore.FieldValue.serverTimestamp() }, { merge: true });
+        dirty = true;
+      }
+    });
+  
+    if (dirty) {
+      batch.commit().catch(e => console.warn("[repair reads] FAIL", e?.code, e?.message));
+    }
+  }, [groups, myUid]);
+  
   useEffect(() => {
     if (!myUid) return;
-
-    const q = db
-      .collection("messagelist")
-      .where("send", "array-contains", myUid);
-
+    const q = db.collection("messagelist").where("send", "array-contains", myUid);
     const unsub = q.onSnapshot(
       (snap) => {
         const rows: Thread[] =
           snap?.docs?.map((d) => ({ id: d.id, ...(d.data() as any) })) ?? [];
-        // sort client-side by createdAt desc (array-contains + orderBy needs index)
-        rows.sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
+        rows.sort(
+          (a, b) =>
+            toMillis(b.updatedAt || b.createdAt) -
+            toMillis(a.updatedAt || a.createdAt)
+        );
         setThreads(rows);
         setLoading(false);
       },
@@ -99,38 +452,234 @@ export default function MessageList({ navigation }: any) {
         setLoading(false);
       }
     );
-
     return () => unsub();
   }, [db, myUid]);
 
-  // open chat with “other” participant
+  
+  /* ---------- Live: groups with me ---------- */
+  useEffect(() => {
+    if (!myUid) return;
+    const q = db.collection("groups").where("members", "array-contains", myUid);
+    const unsub = q.onSnapshot(
+      (snap) => {
+        const rows: Group[] = snap.docs.map((d) => ({
+          id: d.id,
+          ...(d.data() as any),
+        }));
+        rows.sort(
+          (a, b) =>
+            toMillis(b.updatedAt || b.createdAt) -
+            toMillis(a.updatedAt || a.createdAt)
+        );
+        setGroups(rows);
+        setGroupsLoading(false);
+      },
+      (err) => {
+        console.log("[groups] ERROR:", err?.code, err?.message);
+        setGroupsLoading(false);
+      }
+    );
+    return () => unsub();
+  }, [db, myUid]);
+
+  /* ---------- Push unread badge up to Tabs (optional: include groups) ---------- */
+ 
+
+  
+  useFocusEffect(useCallback(() => {
+    const myKey = myIdCandidates[0] || "";
+    if (!myKey) return;
+    setPersistReady(false);
+    loadPersistedReads(myKey).then(map => {
+      setPersistedReads(map);
+      setPersistReady(true);
+    });
+  }, [myIdCandidates]));
+  
+  /* ---------- Openers ---------- */
   const startChat = useCallback(
-    async (t: Thread) => {
-      const otherId = getOtherId(t);
-      const sortedId = [myUid, otherId].sort().join("-");
+    async (tOrUser: Thread | WPUser, fromPeople?: boolean) => {
+      console.log("▶️ startChat called", { fromPeople, tOrUser });
+  
+      let otherId = "";
+      let otherName = "User";
+      let otherAvatar = DUMMY_AVATAR;
+      let otherToken: string | null | undefined = null;
+      let otherWPId: any = undefined;
 
-      // mark as read
-      await db.collection("messagelist").doc(sortedId).set({ read: true }, { merge: true });
+      if (!fromPeople) {
+        const t = tOrUser as Thread;
+        console.log("🧵 startChat(Thread) raw thread:", t);
+  
+        otherId = getOtherId(t);
+        const otherIsSender = String(t.senderuserid) === otherId;
+  
+        otherName = otherIsSender
+          ? t.senderusename || "User"
+          : t.reciverusename || "User";
+  
+        otherAvatar = otherIsSender
+          ? t.senderavatar || DUMMY_AVATAR
+          : t.reciveravatar || DUMMY_AVATAR;
+  
+        // make sure your field names match your data (no `senddertoken` typo)
+        otherToken = otherIsSender ? t.sendertoken : t.recivertoken;
+        otherWPId = otherIsSender ? t.senderuserid : t.reciveruserid;
+      } else {
+        const u = tOrUser as WPUser;
+        console.log("👤 startChat(WPUser) raw user:", u);
+  
+        otherId = String(u.ID);
+        otherName = u.display_name || (u as any).username || "User";
+        otherAvatar = (u as any).profile_image || DUMMY_AVATAR;
+        otherWPId = u.ID;
+      }
 
-      // which side is the other?
-      const otherIsSender = String(t.senderuserid) === otherId;
-      const otherName = otherIsSender ? t.senderusename || "User" : t.reciverusename || "User";
-      const otherAvatar = otherIsSender ? t.senderavatar || DUMMY_AVATAR : t.reciveravatar || DUMMY_AVATAR;
-      const otherToken = otherIsSender ? t.senddertoken : t.recivertoken;
-      const otherWPId = otherIsSender ? t.senderuserid : t.reciveruserid;
+     const sortedId = [myUid, otherId].sort().join("-");
+try {
+  await db
+    .collection("messagelist")
+    .doc(sortedId)
+    .set(
+      {
+        read: true,
+        [`readMap.${myUid}`]: true,
+        [`lastRead.${myUid}`]: firestore.FieldValue.serverTimestamp(),
+      },
+      { merge: true }
+    );
+} catch {}
+
+
 
       navigation.navigate("Chat", {
         userId: otherId,
         name: otherName,
         avatar: otherAvatar,
-        token: otherToken,
+        token: otherToken ?? null,
         userid: otherWPId,
       });
     },
     [db, getOtherId, myUid, navigation]
   );
 
-  // delete conversation (messages + thread doc)
+  
+  useEffect(() => {
+    const dbg = groups.map(g => {
+      const myKey = pickMyGroupKey(g);
+      return {
+        id: g.id,
+        updatedMs: Number((g as any).updatedMs || 0),
+        updatedAt: toMillis(g.updatedAt || g.createdAt),
+        wm: Number((g as any).wm?.[myKey] || 0),
+        readsMs: Number((g as any).readsMs?.[myKey] || 0),
+        reads: toMillis(g.reads?.[myKey]),
+        local: localReads[g.id] || 0,
+        lastmsg: g.lastmsg,
+        lastSentBy: g.lastSentBy,
+        myKey,
+        unread: isGroupUnread(g),
+      };
+    });
+    console.log('[groups dbg]', JSON.stringify(dbg, null, 2));
+  }, [groups, localReads, isGroupUnread, pickMyGroupKey]);
+  
+  
+  const openGroup = useCallback((g: Group) => {
+    const myKey = pickMyGroupKey(g);
+    const now = Date.now();
+  
+    // 1) update persistent cache (survives refresh)
+    setPersistedReads(prev => {
+      const next = { ...prev, [g.id]: now };
+      const k = myIdCandidates[0] || myKey; // stable storage key
+      if (k) savePersistedReads(k, next);
+      return next;
+    });
+  
+    // 2) optimistic local patch (optional)
+    setGroups(prev => prev.map(x =>
+      x.id === g.id ? {
+        ...x,
+        reads:   { ...(x as any).reads,   [myKey]: new Date() },
+        readsMs: { ...(x as any).readsMs, [myKey]: now },
+        wm:      { ...(x as any).wm,      [myKey]: now },
+      } : x
+    ));
+  
+    // 3) server truth
+    firestore().collection("groups").doc(g.id).set({
+      [`reads.${myKey}`]: firestore.FieldValue.serverTimestamp(),
+      [`readsMs.${myKey}`]: now,
+      [`wm.${myKey}`]: now,
+    }, { merge: true }).catch(e => console.warn("[mark-read] FAIL", g.id, myKey, e?.code, e?.message));
+  
+    // 4) navigate
+    navigation.navigate("GroupChat", { groupId: g.id, name: g.name, avatar: g.avatar || null });
+  }, [pickMyGroupKey, myIdCandidates, navigation, setGroups]);
+  
+  
+  
+  
+  
+  
+
+  /* ---------- Delete / Leave ---------- */
+  const deleteGroup = useCallback(
+    (g: Group) => {
+      Alert.alert(
+        "Delete group?",
+        "This will remove the group and all its messages for everyone.",
+        [
+          { text: "Cancel", style: "cancel" },
+          {
+            text: "Delete",
+            style: "destructive",
+            onPress: async () => {
+              try {
+                const groupRef = db.collection("groups").doc(g.id);
+                const msgs = await groupRef.collection("messages").get();
+                const batch = db.batch();
+                msgs.docs.forEach((d) => batch.delete(d.ref));
+                batch.delete(groupRef);
+                await batch.commit();
+              } catch (e) {
+                Alert.alert(
+                  "Failed",
+                  (e as any)?.message || "Could not delete group"
+                );
+              }
+            },
+          },
+        ]
+      );
+    },
+    [db]
+  );
+
+  const leaveGroup = useCallback(
+    async (g: Group) => {
+      try {
+        const nextMembers = (g.members || []).filter(
+          (m) => String(m) !== myUid
+        );
+        await db
+          .collection("groups")
+          .doc(g.id)
+          .set(
+            {
+              members: nextMembers,
+              updatedAt: firestore.FieldValue.serverTimestamp(),
+            },
+            { merge: true }
+          );
+      } catch (e) {
+        Alert.alert("Failed", (e as any)?.message || "Could not leave group");
+      }
+    },
+    [db, myUid]
+  );
+
   const deleteThread = useCallback(
     (t: Thread) => {
       const otherId = getOtherId(t);
@@ -143,7 +692,6 @@ export default function MessageList({ navigation }: any) {
           style: "destructive",
           onPress: async () => {
             try {
-              // delete all messages in chatrooms/<id>/messages
               const msgsSnap = await db
                 .collection("chatrooms")
                 .doc(sortedId)
@@ -165,37 +713,179 @@ export default function MessageList({ navigation }: any) {
     [db, getOtherId, myUid]
   );
 
-  // time ago (tiny helper)
   const timeAgo = (ms?: number) => {
     if (!ms) return "";
     const diff = Date.now() - ms;
     const m = Math.floor(diff / 60000);
-    if (m < 1) return "a few seconds ago";
-    if (m < 60) return `${m} minute${m > 1 ? "s" : ""} ago`;
+    if (m < 1) return "just now";
+    if (m < 60) return `${m}m ago`;
     const h = Math.floor(m / 60);
-    if (h < 24) return `${h} hour${h > 1 ? "s" : ""} ago`;
+    if (h < 24) return `${h}h ago`;
     const d = Math.floor(h / 24);
-    return `${d} day${d > 1 ? "s" : ""} ago`;
+    return `${d}d ago`;
   };
 
-  const renderItem = ({ item }: { item: Thread }) => {
+  /* ---------- PEOPLE (All Users) ---------- */
+  const parseUsersPayload = (json: any): WPUser[] => {
+    const list = Array.isArray(json?.users)
+      ? json.users
+      : Array.isArray(json?.data)
+      ? json.data
+      : [];
+    return list.map((u: any) => ({
+      ID: u.ID,
+      display_name: u.display_name || u.user_login || "",
+      username: u.user_login || u.username || "",
+      email: u.email || "",
+      profile_image: u.profile_image || "",
+    }));
+  };
+
+  const fetchPeople = useCallback(async () => {
+    setPeopleLoading(true);
+    try {
+      const res = await fetch(`https://noctimago.com/wp-json/app/v1/users?page=1`);
+      const json = await res.json();
+      const list = parseUsersPayload(json);
+      setPeople(list);
+    } catch (e) {
+      console.log("[people] fetch error", e);
+    } finally {
+      setPeopleLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (tab === "people" && people.length === 0) fetchPeople();
+  }, [tab, people.length, fetchPeople]);
+
+  const onPeopleRefresh = useCallback(() => {
+    setPeopleRefreshing(true);
+    fetchPeople().finally(() => setPeopleRefreshing(false));
+  }, [fetchPeople]);
+
+  const filteredPeople = useMemo(() => {
+    const q = query.trim().toLowerCase();
+    if (!q) return people;
+    return people.filter(u => String(u.ID) !== myUid).filter(
+      (u) =>
+        (u.display_name || "").toLowerCase().includes(q) ||
+        (u.username || "").toLowerCase().includes(q) ||
+        (u.email || "").toLowerCase().includes(q)
+    );
+  }, [people, query]);
+
+  const modalPeople = useMemo(() => {
+    const q = groupQuery.trim().toLowerCase();
+    if (!q) return people;
+    return people.filter(u => String(u.ID) !== myUid).filter(
+      (u) =>
+        (u.display_name || "").toLowerCase().includes(q) ||
+        (u.username || "").toLowerCase().includes(q) ||
+        (u.email || "").toLowerCase().includes(q)
+    );
+  }, [people, groupQuery]);
+
+  /* ---------- GROUP CREATION ---------- */
+  const togglePick = (id: string) => {
+    setSelectedUserIds((prev) => {
+      const n = new Set(prev);
+      if (n.has(id)) n.delete(id);
+      else n.add(id);
+      return n;
+    });
+  };
+
+// put this helper above createGroup
+const cleanForFirestore = (obj: any): any => {
+  if (obj === null || typeof obj !== "object") return obj;
+  if (Array.isArray(obj)) return obj.map(cleanForFirestore);
+  const out: any = {};
+  Object.keys(obj).forEach((k) => {
+    const v = obj[k];
+    if (v === undefined) return;             // ⛔️ strip undefined keys
+    out[k] = cleanForFirestore(v);
+  });
+  return out;
+};
+
+const createGroup = async () => {
+  const memberIds = Array.from(selectedUserIds);
+  if (!groupName.trim()) return Alert.alert("Group name required");
+  if (memberIds.length < 2) return Alert.alert("Pick at least 2 members");
+
+  const allMembers = Array.from(new Set([myUid, ...memberIds.map(String)]));
+
+  // Build membersInfo with NO undefineds
+  const infoMap: Record<string, { name: string; avatar: string | null }> = {};
+
+  // me
+  infoMap[myUid] = {
+    name:
+      userprofile?.display_name ||
+      userprofile?.username ||
+      userprofile?.user?.display_name ||
+      "You",
+    avatar:
+      userprofile?.profile_image ||
+      userprofile?.user?.profile_image ||
+      userprofile?.avatar ||
+      null, // ✅ null, not undefined
+  };
+
+  // picked users
+  for (const rawId of memberIds) {
+    const id = String(rawId);
+    const u = people.find((p) => String(p.ID) === id);
+    infoMap[id] = {
+      name: u?.display_name || u?.username || (u as any)?.user_login || id,
+      avatar: u?.profile_image ?? null, // ✅ null, not undefined
+    };
+  }
+
+  try {
+    const groupRef = db.collection("groups").doc();
+    const payload = cleanForFirestore({
+      id: groupRef.id,
+      name: groupName.trim(),
+      members: allMembers,
+      createdBy: myUid,
+      createdAt: firestore.FieldValue.serverTimestamp(),
+      updatedAt: firestore.FieldValue.serverTimestamp(),
+      lastmsg: "",
+      membersInfo: infoMap, // ✅ fully cleaned
+      updatedMs: Date.now(), 
+    });
+
+    await groupRef.set(payload);
+
+    setGroupModal(false);
+    setGroupName("");
+    setSelectedUserIds(new Set());
+    setGroupQuery("");
+    openGroup(payload); // navigate
+  } catch (e: any) {
+    Alert.alert("Create failed", e?.message || "Try again");
+  }
+};
+
+  
+
+  /* ---------- RENDERERS ---------- */
+  const renderThread = ({ item }: { item: Thread }) => {
     const otherId = getOtherId(item);
     const otherIsSender = String(item.senderuserid) === otherId;
 
-    const otherName =
-      otherIsSender ? item.senderusename || "User" : item.reciverusename || "User";
-    const otherAvatar =
-      otherIsSender ? item.senderavatar || DUMMY_AVATAR : item.reciveravatar || DUMMY_AVATAR;
+    const otherName = otherIsSender
+      ? item.senderusename || "User"
+      : item.reciverusename || "User";
+    const otherAvatar = otherIsSender
+      ? item.senderavatar || DUMMY_AVATAR
+      : item.reciveravatar || DUMMY_AVATAR;
 
-// inside renderItem
-const preview =
-  item.lastmsg && item.lastmsg.trim().length
-    ? item.lastmsg
-    : "";
-
-// Unread if the last message was sent by the other person, and the doc says not read
-const isUnread = item.read === false && String(item.sentBy) !== myUid;
-
+    const preview = item.lastmsg && item.lastmsg.trim().length ? item.lastmsg : "";
+    const when = toMillis(item.updatedAt || item.createdAt);
+    const unread = isThreadUnread(item);
 
     return (
       <TouchableOpacity
@@ -203,35 +893,34 @@ const isUnread = item.read === false && String(item.sentBy) !== myUid;
         style={styles.card}
         onPress={() => startChat(item)}
       >
-        <Image source={{ uri: otherAvatar }} style={styles.avatar} />
+         <Avatar
+    uri={ otherAvatar}
+    name={otherName}
+    size={40}
+    border
+  />
+        {/* <Image source={{ uri: otherAvatar }} style={styles.avatar} /> */}
         <View style={{ flex: 1 }}>
-  <View style={styles.rowTop}>
-    <Text
-      numberOfLines={1}
-      style={[
-        styles.name,
-        isUnread && { fontWeight: "900" }   // bold name when unread
-      ]}
-    >
-      {otherName}
-    </Text>
-    <Text style={styles.time}>{timeAgo(item.createdAt)}</Text>
-  </View>
+          <View style={styles.rowTop}>
+            <Text numberOfLines={1} style={[styles.name, unread && { fontWeight: "900" }]}>
+              {otherName}
+            </Text>
+            <Text style={styles.time}>{timeAgo(when)}</Text>
+          </View>
 
-  <View style={{ flexDirection: "row", alignItems: "center", gap: 6 }}>
-    {isUnread && <View style={styles.unreadDot} />}   {/* little dot on unread */}
-    <Text
-      numberOfLines={1}
-      style={[
-        styles.preview,
-        isUnread && { color: COLORS.text, fontWeight: "700" } // brighter/bold on unread
-      ]}
-    >
-      {preview}
-    </Text>
-  </View>
-</View>
-
+          <View style={{ flexDirection: "row", alignItems: "center" }}>
+            {unread && <View style={styles.unreadDot} />}
+            <Text
+              numberOfLines={1}
+              style={[
+                styles.preview,
+                unread && { color: COLORS.text, fontWeight: "700" },
+              ]}
+            >
+              {preview}
+            </Text>
+          </View>
+        </View>
 
         <TouchableOpacity onPress={() => deleteThread(item)} style={{ padding: 6 }}>
           <AntDesign name="delete" size={20} color={COLORS.red} />
@@ -240,6 +929,103 @@ const isUnread = item.read === false && String(item.sentBy) !== myUid;
     );
   };
 
+  const renderPerson = ({ item }: { item: WPUser }) => {
+    const name = item.display_name || (item as any).username || "User";
+    const avatar = (item as any).profile_image || DUMMY_AVATAR;
+    const picked = selectedUserIds.has(String(item.ID));
+    const isMe = String(item.ID) === myUid;
+    return (
+      <TouchableOpacity
+        style={styles.card}
+        activeOpacity={0.9}
+        onPress={() => { if (!isMe) startChat(item, true); }}
+        disabled={isMe && !groupModal}
+      >
+          <Avatar
+    uri={ item.profile_image}
+    name={name}
+    size={40}
+    border
+  />
+        {/* <Image source={{ uri: avatar }} style={styles.avatar} /> */}
+        <View style={{ flex: 1 }}>
+          <Text numberOfLines={1} style={styles.name}>
+            {name}
+          </Text>
+          {/* <Text numberOfLines={1} style={styles.preview}>
+            {String(item.email || "").toLowerCase()}
+          </Text> */}
+        </View>
+
+        {groupModal ? (
+          <TouchableOpacity onPress={() => togglePick(String(item.ID))} style={styles.pickBtn}>
+            <Text style={{ color: picked ? "#fff" : COLORS.sub, fontWeight: "800" }}>
+              {picked ? "✓" : "+"}
+            </Text>
+          </TouchableOpacity>
+        ) : (
+          <Feather name="chevron-right" size={20} color={COLORS.sub} />
+        )}
+      </TouchableOpacity>
+    );
+  };
+
+  const renderGroup = ({ item }: { item: Group }) => {
+    const when = toMillis(item.updatedAt || item.createdAt);
+    const iAmOwner = String(item.createdBy) === String(myUid);
+    const unread = isGroupUnread(item);
+
+    return (
+      <TouchableOpacity
+        style={styles.card}
+        activeOpacity={0.9}
+        onPress={() => openGroup(item)}
+
+        
+      >
+         <Avatar
+    uri={ item.avatar}
+    name={item.name}
+    size={40}
+    border
+  />
+        {/* <Image source={{ uri: item.avatar || DUMMY_AVATAR }} style={styles.avatar} /> */}
+        <View style={{ flex: 1 }}>
+          <View style={styles.rowTop}>
+            <Text numberOfLines={1} style={[styles.name, unread && { fontWeight: "900" }]}>
+              {item.name}
+            </Text>
+            <Text style={styles.time}>{timeAgo(when)}</Text>
+          </View>
+
+          <View style={{ flexDirection: "row", alignItems: "center" }}>
+            {unread && <View style={styles.unreadDot} />}
+            <Text
+              numberOfLines={1}
+              style={[
+                styles.preview,
+                unread && { color: COLORS.text, fontWeight: "700" },
+              ]}
+            >
+              {item.lastmsg || `${item.members?.length || 0} members`}
+            </Text>
+          </View>
+        </View>
+
+        {iAmOwner ? (
+          <TouchableOpacity onPress={() => deleteGroup(item)} style={{ padding: 6 }}>
+            <AntDesign name="delete" size={20} color={COLORS.red} />
+          </TouchableOpacity>
+        ) : (
+          <TouchableOpacity onPress={() => leaveGroup(item)} style={{ padding: 6 }}>
+            <Feather name="log-out" size={20} color={COLORS.sub} />
+          </TouchableOpacity>
+        )}
+      </TouchableOpacity>
+    );
+  };
+
+  /* ---------- UI ---------- */
   return (
     <View style={[styles.screen, { paddingTop: insets.top }]}>
       <StatusBar barStyle="light-content" backgroundColor={COLORS.bg} />
@@ -247,23 +1033,236 @@ const isUnread = item.read === false && String(item.sentBy) !== myUid;
       {/* Top bar */}
       <View style={styles.topBar}>
         <Text style={styles.topTitle}>Messages</Text>
-        <Feather name="message-circle" size={18} color={COLORS.onDark} />
+        <Feather name="message-circle" size={18} color={COLORS.text} />
       </View>
 
-      {loading ? (
+      {/* Tabs */}
+      <View style={styles.tabs}>
+        <TouchableOpacity
+          onPress={() => setTab("chats")}
+          style={[styles.tab, tab === "chats" && styles.tabActive]}
+        >
+          <Text style={[styles.tabText, tab === "chats" && styles.tabTextActive]}>
+            Chats
+          </Text>
+        </TouchableOpacity>
+        <TouchableOpacity
+          onPress={() => setTab("people")}
+          style={[styles.tab, tab === "people" && styles.tabActive]}
+        >
+          <Text style={[styles.tabText, tab === "people" && styles.tabTextActive]}>
+            All Users
+          </Text>
+        </TouchableOpacity>
+        <TouchableOpacity
+          onPress={() => setTab("groups")}
+          style={[styles.tab, tab === "groups" && styles.tabActive]}
+        >
+          <Text style={[styles.tabText, tab === "groups" && styles.tabTextActive]}>
+            Groups
+          </Text>
+        </TouchableOpacity>
+      </View>
+
+      {tab === "chats" ? (
+        loading ? (
+          <View style={styles.loading}>
+            <ActivityIndicator />
+            <Text style={{ color: COLORS.sub, marginTop: 8 }}>Loading…</Text>
+          </View>
+        ) : threads.length === 0 ? (
+          <View style={styles.empty}>
+            <Text style={{ color: COLORS.sub }}>No conversations yet.</Text>
+          </View>
+        ) : (
+          <FlatList
+            data={threads}
+            keyExtractor={(t) => t.id}
+            renderItem={renderThread}
+            contentContainerStyle={{ padding: 12, paddingBottom: 20 }}
+          />
+        )
+      ) : tab === "people" ? (
+        <>
+          {/* Search pill */}
+          <View style={styles.searchWrap}>
+            <Feather name="search" size={18} color={COLORS.sub} />
+            <TextInput
+              value={query}
+              onChangeText={setQuery}
+              placeholder="Search users"
+              placeholderTextColor={COLORS.sub}
+              style={styles.searchInput}
+              autoCapitalize="none"
+              autoCorrect={false}
+            />
+            <TouchableOpacity onPress={() => setGroupModal(true)} style={styles.newGroupBtn}>
+              <Feather name="users" size={16} color="#fff" />
+              <Text style={{ color: "#fff", marginLeft: 6, fontWeight: "700" }}>
+                New Group
+              </Text>
+            </TouchableOpacity>
+          </View>
+
+          <FlatList
+            data={filteredPeople}
+            keyExtractor={(u) => String(u.ID)}
+            renderItem={renderPerson}
+            contentContainerStyle={{ padding: 12, paddingBottom: 20 }}
+            refreshControl={
+              <RefreshControl
+                tintColor={COLORS.text}
+                refreshing={peopleRefreshing}
+                onRefresh={onPeopleRefresh}
+              />
+            }
+            ListFooterComponent={
+              peopleLoading ? (
+                <View style={{ paddingVertical: 16 }}>
+                  <ActivityIndicator />
+                </View>
+              ) : null
+            }
+            ListEmptyComponent={
+              <View style={styles.empty}>
+                <Text style={{ color: COLORS.sub }}>
+                  {peopleLoading ? "Loading…" : "No users found."}
+                </Text>
+              </View>
+            }
+          />
+
+          {/* Create Group Modal */}
+          <Modal
+            visible={groupModal}
+            animationType="slide"
+            onRequestClose={() => setGroupModal(false)}
+            transparent
+          >
+            <View style={styles.modalBackdrop}>
+              <KeyboardAvoidingView
+                behavior={Platform.OS === "ios" ? "padding" : undefined}
+                style={{ flex: 1, justifyContent: "flex-end" }}
+              >
+                <View style={styles.modalCard}>
+                  <ScrollView
+                    keyboardShouldPersistTaps="handled"
+                    contentContainerStyle={styles.modalScroll}
+                  >
+                    <Text style={styles.modalTitle}>Create Group</Text>
+
+                    <TextInput
+                      value={groupName}
+                      onChangeText={setGroupName}
+                      placeholder="Group name"
+                      placeholderTextColor={COLORS.sub}
+                      style={styles.modalInput}
+                      returnKeyType="done"
+                      blurOnSubmit
+                    />
+
+                    {/* Modal search */}
+                    <View style={[styles.searchWrap, { marginHorizontal: 0, marginTop: 10 }]}>
+                      <Feather name="search" size={18} color={COLORS.sub} />
+                      <TextInput
+                        value={groupQuery}
+                        onChangeText={setGroupQuery}
+                        placeholder="Search members"
+                        placeholderTextColor={COLORS.sub}
+                        style={styles.searchInput}
+                        autoCapitalize="none"
+                        autoCorrect={false}
+                        returnKeyType="search"
+                      />
+                    </View>
+
+                    <Text style={styles.modalSubtitle}>Pick members (min 2)</Text>
+                    <FlatList
+                      data={modalPeople}
+                      keyExtractor={(u) => String(u.ID)}
+                      renderItem={({ item }) => {
+                        const picked = selectedUserIds.has(String(item.ID));
+                        return (
+                          <View style={styles.pickRow}>
+                              <Avatar
+    uri={ item.profile_image}
+    name={item.username}
+    size={30}
+    border
+  />
+                            {/* <Image
+                              source={{ uri: item.profile_image || DUMMY_AVATAR }}
+                              style={styles.pickAvatar}
+                            /> */}
+                            <Text style={[styles.name, { flex: 1,marginLeft:10 }]} numberOfLines={1}>
+                              {item.display_name || (item as any).username}
+                            </Text>
+                            <TouchableOpacity
+                              onPress={() => togglePick(String(item.ID))}
+                              style={[
+                                styles.pickBtn,
+                                picked && { backgroundColor: COLORS.primary, borderColor: COLORS.primary },
+                              ]}
+                            >
+                              <Text style={{ color: picked ? "#fff" : COLORS.sub, fontWeight: "800" }}>
+                                {picked ? "✓" : "+"}
+                              </Text>
+                            </TouchableOpacity>
+                          </View>
+                        );
+                      }}
+                      style={{ maxHeight: 300 }}
+                      keyboardShouldPersistTaps="handled"
+                      ListEmptyComponent={
+                        <Text style={{ color: COLORS.sub, textAlign: "center", paddingVertical: 16 }}>
+                          No users
+                        </Text>
+                      }
+                    />
+
+                    <View style={{ height: 12 }} />
+                    <View style={{ flexDirection: "row", justifyContent: "flex-end", gap: 12 }}>
+                      <TouchableOpacity
+                        onPress={() => {
+                          setGroupModal(false);
+                          setSelectedUserIds(new Set());
+                          setGroupName("");
+                          setGroupQuery("");
+                        }}
+                        style={[styles.actionBtn, { backgroundColor: COLORS.pill }]}
+                      >
+                        <Text style={{ color: COLORS.text, fontWeight: "700" }}>Cancel</Text>
+                      </TouchableOpacity>
+                      <TouchableOpacity
+                        onPress={createGroup}
+                        style={[styles.actionBtn, { backgroundColor: COLORS.primary }]}
+                      >
+                        <Text style={{ color: "#fff", fontWeight: "700" }}>Create</Text>
+                      </TouchableOpacity>
+                    </View>
+                    <View style={{ height: 24 }} />
+                  </ScrollView>
+                </View>
+              </KeyboardAvoidingView>
+            </View>
+          </Modal>
+        </>
+      ) : groupsLoading ? (
         <View style={styles.loading}>
           <ActivityIndicator />
           <Text style={{ color: COLORS.sub, marginTop: 8 }}>Loading…</Text>
         </View>
-      ) : threads.length === 0 ? (
+      ) : groups.length === 0 ? (
         <View style={styles.empty}>
-          <Text style={{ color: COLORS.sub }}>No conversations yet.</Text>
+          <Text style={{ color: COLORS.sub }}>
+            No groups yet. Create one from All Users.
+          </Text>
         </View>
       ) : (
         <FlatList
-          data={threads}
-          keyExtractor={(t) => t.id}
-          renderItem={renderItem}
+          data={groups}
+          keyExtractor={(g) => g.id}
+          renderItem={renderGroup}
           contentContainerStyle={{ padding: 12, paddingBottom: 20 }}
         />
       )}
@@ -274,6 +1273,7 @@ const isUnread = item.read === false && String(item.sentBy) !== myUid;
 /* ---------- Styles ---------- */
 const styles = StyleSheet.create({
   screen: { flex: 1, backgroundColor: COLORS.bg },
+
   topBar: {
     height: 48,
     borderBottomWidth: StyleSheet.hairlineWidth,
@@ -285,8 +1285,51 @@ const styles = StyleSheet.create({
   },
   topTitle: { color: COLORS.text, fontWeight: "700", fontSize: 16 },
 
+  tabs: {
+    flexDirection: "row",
+    padding: 8,
+    gap: 8,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: COLORS.outline,
+  },
+  tab: {
+    flex: 1,
+    paddingVertical: 10,
+    backgroundColor: COLORS.card,
+    borderRadius: 12,
+    alignItems: "center",
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: COLORS.outline,
+  },
+  tabActive: { backgroundColor: COLORS.pill, borderColor: COLORS.pill },
+  tabText: { color: COLORS.sub, fontWeight: "700" },
+  tabTextActive: { color: COLORS.text },
+
   loading: { flex: 1, alignItems: "center", justifyContent: "center" },
   empty: { flex: 1, alignItems: "center", justifyContent: "center" },
+
+  searchWrap: {
+    flexDirection: "row",
+    alignItems: "center",
+    backgroundColor: COLORS.pill,
+    marginHorizontal: 12,
+    marginTop: 12,
+    paddingHorizontal: 12,
+    borderRadius: 14,
+    height: 44,
+    gap: 8,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: COLORS.outline,
+  },
+  searchInput: { flex: 1, color: COLORS.text, fontSize: 16 },
+  newGroupBtn: {
+    flexDirection: "row",
+    alignItems: "center",
+    backgroundColor: COLORS.primary,
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    borderRadius: 10,
+  },
 
   card: {
     backgroundColor: COLORS.card,
@@ -299,9 +1342,47 @@ const styles = StyleSheet.create({
     gap: 12,
     marginBottom: 12,
   },
-  avatar: { width: 60, height: 60, borderRadius: 30, backgroundColor: "#222" },
+  avatar: { width: 60, height: 60,  backgroundColor: "#222" ,borderColor:"white",borderWidth:1},
   rowTop: { flexDirection: "row", justifyContent: "space-between", alignItems: "center" },
   name: { color: COLORS.text, fontSize: 18, fontWeight: "800", marginRight: 10, flex: 1 },
   time: { color: COLORS.sub, fontSize: 12 },
-  preview: { color: COLORS.text, marginTop: 4 },
+  preview: { color: COLORS.sub, marginTop: 4, flexShrink: 1 },
+  unreadDot: { width: 8, height: 8, borderRadius: 4, backgroundColor: COLORS.primary, marginRight: 6 },
+
+  // Modal
+  modalBackdrop: { flex: 1, backgroundColor: "rgba(0,0,0,0.6)", justifyContent: "flex-end" },
+  modalCard: {
+    backgroundColor: COLORS.card,
+    borderTopLeftRadius: 16,
+    borderTopRightRadius: 16,
+    padding: 16,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: COLORS.outline,
+    maxHeight: "92%",
+  },
+  modalScroll: { paddingBottom: 10 },
+  modalTitle: { color: COLORS.text, fontSize: 18, fontWeight: "800" },
+  modalSubtitle: { color: COLORS.sub, marginTop: 10, marginBottom: 6 },
+  modalInput: {
+    backgroundColor: COLORS.pill,
+    borderRadius: 10,
+    paddingHorizontal: 12,
+    height: 44,
+    color: COLORS.text,
+    marginTop: 10,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: COLORS.outline,
+  },
+  pickRow: { flexDirection: "row", alignItems: "center", paddingVertical: 8 },
+  pickAvatar: { width: 36, height: 36, backgroundColor: "#222", marginRight: 10,borderColor:"white",borderWidth:1 },
+  pickBtn: {
+    height: 32,
+    minWidth: 32,
+    borderRadius: 8,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: COLORS.outline,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  actionBtn: { paddingHorizontal: 14, paddingVertical: 10, borderRadius: 10 },
 });

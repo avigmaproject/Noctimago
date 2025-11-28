@@ -1,0 +1,63 @@
+{
+  "project_info": {
+    "project_number": "406896981733",
+    "project_id": "noctimago-e744c",
+    "storage_bucket": "noctimago-e744c.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:406896981733:android:e03a6841558268f3e5860c",
+        "android_client_info": {
+          "package_name": "com.noctimago"
+        }
+      },
+      "oauth_client": [
+        {
+          "client_id": "406896981733-ikp1n6sfnsri9hu9joli8pk1pqklcntk.apps.googleusercontent.com",
+          "client_type": 1,
+          "android_info": {
+            "package_name": "com.noctimago",
+            "certificate_hash": "5e8f16062ea3cd2c4a0d547876baa6f38cabf625"
+          }
+        },
+        {
+          "client_id": "406896981733-nona461tb95sde47is11m42afa0btfhj.apps.googleusercontent.com",
+          "client_type": 1,
+          "android_info": {
+            "package_name": "com.noctimago",
+            "certificate_hash": "1d434b8a249f13bfabf1cd5e708b2cee5e35b082"
+          }
+        },
+        {
+          "client_id": "406896981733-hakhrb4g0ad78lq8n010b8oduvlr8ioo.apps.googleusercontent.com",
+          "client_type": 3
+        }
+      ],
+      "api_key": [
+        {
+          "current_key": "AIzaSyBZYL0M3h9BZ4rlhOCpqVZlpfEJwfDI03U"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": [
+            {
+              "client_id": "406896981733-hakhrb4g0ad78lq8n010b8oduvlr8ioo.apps.googleusercontent.com",
+              "client_type": 3
+            },
+            {
+              "client_id": "406896981733-nn22htbnks47b48n9fgsmmpuien5k371.apps.googleusercontent.com",
+              "client_type": 2,
+              "ios_info": {
+                "bundle_id": "NoctimagoApp.com",
+                "app_store_id": "6752555445"
+              }
+            }
+          ]
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}
