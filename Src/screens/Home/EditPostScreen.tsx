@@ -27,7 +27,7 @@ import { allusers, getFcmToken, requestUserPermission, sendnotify } from "../../
 import { uploaddocumnetaws } from "../../utils/Awsfile";
 
 const AVATAR = "";
-const GOOGLE_PLACES_KEY = "AIzaSyCUs425jvu7D3T-c3LX8eM2iS5XFYvgFUI";
+// const GOOGLE_PLACES_KEY = "AIzaSyCUs425jvu7D3T-c3LX8eM2iS5XFYvgFUI";
 
 // --- Emoji / entity helpers (same behavior as PostDetailScreen) ---
 const decodeCurlyUnicode = (s: string) =>
