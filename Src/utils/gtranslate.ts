@@ -1,7 +1,7 @@
 // src/utils/gtranslate.ts
 import AsyncStorage from '@react-native-async-storage/async-storage';
 
-const API_KEY = 'AIzaSyBxcqCbnR9gl2RA8CzsLD-U9vjaAz8c_rU'; // put your key here for live results
+const API_KEY = ''; // put your key here for live results
 const DEBUG_FAKE = !API_KEY || API_KEY === 'FAKE'; // FAKE mode if key is empty
 
 const MEMO = new Map<string, string>();
