@@ -15,6 +15,7 @@ import {
   KeyboardAvoidingView,
   ScrollView,
   Platform,
+  ActionSheetIOS
 } from "react-native";
 import firestore from "@react-native-firebase/firestore";
 import Feather from "react-native-vector-icons/Feather";
@@ -140,6 +141,93 @@ const [persistReady, setPersistReady] = useState(false);
   const [groupQuery, setGroupQuery] = useState("");
 
   const db = firestore();
+// --- Safety helpers (Guideline 1.2) ---
+
+const reportUser = async (
+  myUid: string,
+  reportedUserId: string,
+  from: string,
+  extra: Record<string, any> = {}
+) => {
+  if (!reportedUserId) return;
+  try {
+    await firestore().collection("reports").add({
+      type: "user",
+      reporterId: myUid || null,
+      reportedUserId: String(reportedUserId),
+      from,
+      ...extra,
+      createdAt: firestore.FieldValue.serverTimestamp(),
+    });
+    Alert.alert("Report sent", "Thanks for helping keep the community safe.");
+  } catch (e: any) {
+    Alert.alert("Error", e?.message || "Could not send report. Please try again.");
+  }
+};
+
+const blockUser = async (myUid: string, blockedUserId: string) => {
+  if (!myUid || !blockedUserId) return;
+  try {
+    await firestore()
+      .collection("blockedUsers")
+      .doc(String(myUid))
+      .set(
+        {
+          [String(blockedUserId)]: true,
+          updatedAt: firestore.FieldValue.serverTimestamp(),
+        },
+        { merge: true }
+      );
+    Alert.alert("User blocked", "You won't receive messages from this user.");
+  } catch (e: any) {
+    Alert.alert("Error", e?.message || "Could not block user. Please try again.");
+  }
+};
+
+const reportGroup = async (
+  myUid: string,
+  groupId: string,
+  groupName: string
+) => {
+  if (!groupId) return;
+  try {
+    await firestore().collection("reports").add({
+      type: "group",
+      reporterId: myUid || null,
+      groupId,
+      groupName,
+      from: "message_list_groups",
+      createdAt: firestore.FieldValue.serverTimestamp(),
+    });
+    Alert.alert("Report sent", "Thanks for helping keep the community safe.");
+  } catch (e: any) {
+    Alert.alert("Error", e?.message || "Could not send report. Please try again.");
+  }
+};
+// Header "Messages" menu (global flag)
+const openMessagesMenu = () => {
+  const doReport = () =>
+    reportUser(myUid, "", "messages_header", { note: "General report from Messages screen" });
+
+  if (Platform.OS === "ios") {
+    ActionSheetIOS.showActionSheetWithOptions(
+      {
+        title: "Messages",
+        message: "What would you like to do?",
+        options: ["Report abusive content", "Cancel"],
+        cancelButtonIndex: 1,
+      },
+      (buttonIndex) => {
+        if (buttonIndex === 0) doReport();
+      }
+    );
+  } else {
+    Alert.alert("Messages", "What would you like to do?", [
+      { text: "Cancel", style: "cancel" },
+      { text: "Report abusive content", onPress: doReport },
+    ]);
+  }
+};
 
   /* ---------- Helpers ---------- */
 
@@ -252,7 +340,8 @@ const [persistReady, setPersistReady] = useState(false);
         id: g.id,
         updatedSrv, updatedMs, updated,
         seenSrv, seenMs, seenLoc, seen,
-        unread: updated > 0 && updated - seen > 1500,
+        unread: updated > seen
+        ,
       };
     });
     console.log('[groups unread dbg]', JSON.stringify(dbg, null, 2));
@@ -361,6 +450,7 @@ useEffect(() => {
   const stack = navigation.getParent?.();
   const tabs  = stack?.getParent?.() ?? stack;
   tabs?.setParams?.({ chatUnreadCount: total });
+
 }, [threads, groups, isThreadUnread, isGroupUnread, navigation]);
 
 useFocusEffect(useCallback(() => {
@@ -371,6 +461,7 @@ useFocusEffect(useCallback(() => {
   const stack = navigation.getParent?.();
   const tabs  = stack?.getParent?.() ?? stack;
   tabs?.setParams?.({ chatUnreadCount: total });
+
 }, [threads, groups, isThreadUnread, isGroupUnread, navigation]));
 
 
@@ -485,6 +576,30 @@ useFocusEffect(useCallback(() => {
   /* ---------- Push unread badge up to Tabs (optional: include groups) ---------- */
  
 
+  useFocusEffect(
+    React.useCallback(() => {
+      const now = Date.now();
+      const uid = myUid;
+  
+      firestore()
+        .collection('groups')
+        .where('members', 'array-contains', uid)
+        .get()
+        .then(snap => {
+          snap.forEach(doc => {
+            doc.ref.set(
+              {
+                [`readsMs.${uid}`]: now,
+                [`reads.${uid}`]: firestore.FieldValue.serverTimestamp(),
+              },
+              { merge: true }
+            );
+          });
+        });
+  
+      return () => {};
+    }, [myUid])
+  );
   
   useFocusEffect(useCallback(() => {
     const myKey = myIdCandidates[0] || "";
@@ -495,7 +610,121 @@ useFocusEffect(useCallback(() => {
       setPersistReady(true);
     });
   }, [myIdCandidates]));
+  const openGroupMenu = (g: Group) => {
+    const iAmOwner = String(g.createdBy) === String(myUid);
   
+    const doOpen   = () => openGroup(g);
+    const doReport = () => reportGroup(myUid, g.id, g.name);
+    const doDelete = () => deleteGroup(g);
+    const doLeave  = () => leaveGroup(g);
+  
+    const options = ["Open group", "Report group"];
+    const actions: (() => void)[] = [doOpen, doReport];
+  
+    if (iAmOwner) {
+      options.push("Delete group");
+      actions.push(doDelete);
+    } else {
+      options.push("Leave group");
+      actions.push(doLeave);
+    }
+    options.push("Cancel");
+  
+    if (Platform.OS === "ios") {
+      ActionSheetIOS.showActionSheetWithOptions(
+        {
+          title: g.name,
+          message: "Group options",
+          options,
+          cancelButtonIndex: options.length - 1,
+          destructiveButtonIndex: iAmOwner ? 2 : 2,
+        },
+        (i) => {
+          if (i >= 0 && i < actions.length) actions[i]();
+        }
+      );
+    } else {
+      Alert.alert("Group options", g.name, [
+        { text: "Open group", onPress: doOpen },
+        { text: "Report group", onPress: doReport },
+        iAmOwner
+          ? { text: "Delete group", onPress: doDelete, style: "destructive" }
+          : { text: "Leave group", onPress: doLeave, style: "destructive" },
+        { text: "Cancel", style: "cancel" },
+      ]);
+    }
+  };
+  
+  const openPersonMenu = (user: WPUser) => {
+    const otherId = String(user.ID);
+    const name =
+      user.display_name || (user as any).username || "User";
+  
+    const doOpen   = () => startChat(user, true);
+    const doReport = () => reportUser(myUid, otherId, "message_list_people");
+  
+    if (Platform.OS === "ios") {
+      ActionSheetIOS.showActionSheetWithOptions(
+        {
+          title: name,
+          message: "User options",
+          options: ["Open chat", "Report user", "Cancel"],
+          cancelButtonIndex: 2,
+        },
+        (i) => {
+          if (i === 0) doOpen();
+          else if (i === 1) doReport();
+        }
+      );
+    } else {
+      Alert.alert("User options", name, [
+        { text: "Open chat", onPress: doOpen },
+        { text: "Report user", onPress: doReport },
+        { text: "Cancel", style: "cancel" },
+      ]);
+    }
+  };
+  
+  // Per-thread menu (open / report / block / delete)
+const openThreadMenu = (t: Thread) => {
+  const otherId = getOtherId(t);
+  const otherIsSender = String(t.senderuserid) === otherId;
+  const otherName = otherIsSender
+    ? t.senderusename || "User"
+    : t.reciverusename || "User";
+
+  const doOpen    = () => startChat(t);
+  const doReport  = () => reportUser(myUid, otherId, "message_list_thread", { threadId: t.id });
+  const doBlock   = () => blockUser(myUid, otherId);
+  const doDelete  = () => deleteThread(t);
+
+  if (Platform.OS === "ios") {
+    ActionSheetIOS.showActionSheetWithOptions(
+      {
+        title: otherName,
+        message: "Chat options",
+        options: ["Open chat", "Report user", "Block user", "Delete chat", "Cancel"],
+        destructiveButtonIndex: 3,
+        cancelButtonIndex: 4,
+      },
+      (i) => {
+        if (i === 0) doOpen();
+        else if (i === 1) doReport();
+        else if (i === 2) doBlock();
+        else if (i === 3) doDelete();
+      }
+    );
+  } else {
+    Alert.alert("Chat options", otherName, [
+      { text: "Open chat", onPress: doOpen },
+      { text: "Report user", onPress: doReport },
+      { text: "Block user", onPress: doBlock, style: "destructive" },
+      { text: "Delete chat", onPress: doDelete, style: "destructive" },
+      { text: "Cancel", style: "cancel" },
+    ]);
+  }
+};
+
   /* ---------- Openers ---------- */
   const startChat = useCallback(
     async (tOrUser: Thread | WPUser, fromPeople?: boolean) => {
@@ -889,10 +1118,12 @@ const createGroup = async () => {
 
     return (
       <TouchableOpacity
-        activeOpacity={0.9}
-        style={styles.card}
-        onPress={() => startChat(item)}
-      >
+      activeOpacity={0.9}
+      style={styles.card}
+      onPress={() => startChat(item)}
+      onLongPress={() => openThreadMenu(item)}   // 👈 ADD
+      delayLongPress={250}                       // 👈 nice UX
+    >
          <Avatar
     uri={ otherAvatar}
     name={otherName}
@@ -936,11 +1167,12 @@ const createGroup = async () => {
     const isMe = String(item.ID) === myUid;
     return (
       <TouchableOpacity
-        style={styles.card}
-        activeOpacity={0.9}
-        onPress={() => { if (!isMe) startChat(item, true); }}
-        disabled={isMe && !groupModal}
-      >
+      style={styles.card}
+      activeOpacity={0.9}
+      onPress={() => { if (!isMe) startChat(item, true); }}
+      onLongPress={() => { if (!isMe) openPersonMenu(item); }}  // 👈 ADD
+      disabled={isMe && !groupModal}
+    >
           <Avatar
     uri={ item.profile_image}
     name={name}
@@ -977,12 +1209,12 @@ const createGroup = async () => {
 
     return (
       <TouchableOpacity
-        style={styles.card}
-        activeOpacity={0.9}
-        onPress={() => openGroup(item)}
-
-        
-      >
+    style={styles.card}
+    activeOpacity={0.9}
+    onPress={() => openGroup(item)}
+    onLongPress={() => openGroupMenu(item)}   // 👈 ADD
+    delayLongPress={250}
+  >
          <Avatar
     uri={ item.avatar}
     name={item.name}
@@ -1032,9 +1264,12 @@ const createGroup = async () => {
 
       {/* Top bar */}
       <View style={styles.topBar}>
-        <Text style={styles.topTitle}>Messages</Text>
-        <Feather name="message-circle" size={18} color={COLORS.text} />
-      </View>
+  <Text style={styles.topTitle}>Messages</Text>
+  <TouchableOpacity onPress={openMessagesMenu}>
+    <Feather name="message-circle" size={18} color={COLORS.text} />
+  </TouchableOpacity>
+</View>
+
 
       {/* Tabs */}
       <View style={styles.tabs}>

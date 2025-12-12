@@ -432,9 +432,7 @@ export default function ChatDebug({ navigation, route }: any) {
     }, [markThreadRead])
   );
 
-  useEffect(() => {
-    markThreadRead();
-  }, [messages, markThreadRead]);
+
 
   /* ---- Delete message ---- */
   const deleteMessage = async (msg: Msg) => {

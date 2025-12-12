@@ -137,14 +137,38 @@ export default function GroupChat({ navigation, route }: any) {
   const msgCol = useMemo(() => groupDoc.collection('messages'), [groupDoc]);
 // --- Read markers ---
 const markRead = useCallback(() => {
-  if (!myUid) return;
+  if (!myUid) {
+    console.log("[MARK READ] no myUid");
+    return;
+  }
+
   const now = Date.now();
+
+  console.log("[MARK READ] writing:", {
+    groupId,
+    myUid,
+    now
+  });
+
   groupDoc.set({
     [`reads.${myUid}`]: firestore.FieldValue.serverTimestamp(),
     [`readsMs.${myUid}`]: now,
     [`wm.${myUid}`]: now,
-  }, { merge: true }).catch(err => console.warn("[markRead] FAIL", err?.code, err?.message));
+  }, { merge: true })
+  .then(() => {
+    console.log("[MARK READ] success");
+  })
+  .catch(err => {
+    console.log("[MARK READ] ERROR:", err);
+  });
 }, [groupDoc, myUid]);
+useEffect(() => {
+  if (group && group.id) {
+    console.log("[GROUP UPDATED] Trigger markRead");
+    markRead();
+  }
+}, [group]);
+
 
 useFocusEffect(useCallback(() => {
   markRead();
@@ -152,9 +176,7 @@ useFocusEffect(useCallback(() => {
 }, [markRead]));
 
 // ✅ mark once more when leaving GroupChat (unmount)
-useEffect(() => {
-  return () => { markRead(); };
-}, [markRead]);
+
 
   /* ----------------- Header (tap to settings) -------------- */
   useEffect(() => {
