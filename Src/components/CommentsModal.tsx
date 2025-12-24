@@ -424,120 +424,168 @@ const normalizeAvatarUri = (raw?: string | null): string | undefined => {
   const renderChild = (child: CommentNode) => {
     const busyChild = isCommentLikeBusy?.(String(child.ID));
     const childAvatar = normalizeAvatarUri(child.author_profile_image);
-    return(
-    
-    
-    <View key={String(child.ID)} style={styles(COLORS).childWrap}>
-      <TouchableOpacity onPress={() => onPressProfile(String(child.user_id))} style={{ marginRight: 8, marginTop: 2 }}>
-        <Avatar uri={childAvatar} name={child.author} size={20} border />
-      </TouchableOpacity>
-
-      <View style={{ flex: 1 }}>
-        {editingId === String(child.ID) ? (
-          <Text style={styles(COLORS).commentLine} allowFontScaling={false}>{child.author}</Text>
-        ) : (
-          <Text style={styles(COLORS).commentLine} allowFontScaling={false}>
-            <Text style={styles(COLORS).commentAuthor} allowFontScaling={false}>{child.author}</Text>
-            <TText style={styles(COLORS).commentText} allowFontScaling={false}> </TText>
-            <MentionsText
-              text={normalizeEmoji(String(child.content || ""))}
-              onPressUsername={onPressMention}
-              normalStyle={styles(COLORS).commentText}
-            />
-          </Text>
-        )}
-
-        <View style={{ flexDirection: "row", alignItems: "center", columnGap: 16, marginTop: 6 }}>
-          {isMine(child) && editingId !== String(child.ID) && (
-            <>
-              <TouchableOpacity disabled={busyId === String(child.ID)} onPress={() => startEdit(child)} style={styles(COLORS).chipBtn}>
-                <TText style={styles(COLORS).replyTxt} allowFontScaling={false}>Edit</TText>
-              </TouchableOpacity>
-              <TouchableOpacity disabled={busyId === String(child.ID)} onPress={() => confirmDelete(String(child.ID))} style={styles(COLORS).chipBtn}>
-                <TText
-                  style={[styles(COLORS).replyTxt, { color: "#EF2C2C", opacity: busyId === String(child.ID) ? 0.6 : 1 }]}
-                  allowFontScaling={false}
-                >
-                  {busyId === String(child.ID) ? "Deleting…" : "Delete"}
-                </TText>
-              </TouchableOpacity>
-            </>
-          )}
-        </View>
-        <TouchableOpacity
-        onPress={() => !busyChild && onToggleCommentLike?.(String(child.ID))}
-        disabled={!!busyChild}
-        hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
-        style={{
-          flexDirection: "row",
-          alignItems: "center",
-          marginRight: 12,
-          opacity: busyChild ? 0.5 : 1,
-        }}
-      >
-        <Ionicons
-          name={child.is_liked ? "heart" : "heart-outline"}
-          size={16}
-          color={child.is_liked ? COLORS.accent : COLORS.icon}
-        />
-        <Text style={{ color: COLORS.text, marginLeft: 6, fontSize: 12 }}>
-          {Number(child.like_count || 0)}
-        </Text>
-      </TouchableOpacity>
-
-
-
-      </View>
-    </View>
-  )
-}
-
-  const renderRoot = ({ item }: { item: CommentNode }) => {
-    console.log("avtarrrrrrrrchilddd====", item);
-    const busyRoot = isCommentLikeBusy?.(String(item.ID));
-    const rootAvatar = normalizeAvatarUri(item.author_profile_image);
   
     return (
+      <View key={String(child.ID)} style={styles(COLORS).childWrap}>
+        {/* Avatar */}
+        <TouchableOpacity
+          onPress={() => onPressProfile(String(child.user_id))}
+          style={{ marginRight: 8, marginTop: 2 }}
+        >
+          <Avatar uri={childAvatar} name={child.author} size={20} border />
+        </TouchableOpacity>
+  
+        {/* Content */}
+        <View style={{ flex: 1 }}>
+          {editingId === String(child.ID) ? (
+            // Editing mode
+            <Text style={styles(COLORS).commentLine} allowFontScaling={false}>
+              {child.author}
+            </Text>
+          ) : (
+            // ✅ Normal mode: AUTHOR one line, COMMENT next line
+            <View>
+              <Text style={styles(COLORS).commentAuthor} allowFontScaling={false}>
+                {child.author}
+              </Text>
+  
+              <MentionsText
+                text={normalizeEmoji(String(child.content || ""))}
+                onPressUsername={onPressMention}
+                normalStyle={styles(COLORS).commentText}
+              />
+            </View>
+          )}
+  
+          {/* Actions (Edit/Delete) */}
+          <View style={{ flexDirection: "row", alignItems: "center", columnGap: 16, marginTop: 6 }}>
+            {isMine(child) && editingId !== String(child.ID) && (
+              <>
+                <TouchableOpacity
+                  disabled={busyId === String(child.ID)}
+                  onPress={() => startEdit(child)}
+                  style={styles(COLORS).chipBtn}
+                >
+                  <TText style={styles(COLORS).replyTxt} allowFontScaling={false}>
+                    Edit
+                  </TText>
+                </TouchableOpacity>
+  
+                <TouchableOpacity
+                  disabled={busyId === String(child.ID)}
+                  onPress={() => confirmDelete(String(child.ID))}
+                  style={styles(COLORS).chipBtn}
+                >
+                  <TText
+                    style={[
+                      styles(COLORS).replyTxt,
+                      { color: "#EF2C2C", opacity: busyId === String(child.ID) ? 0.6 : 1 },
+                    ]}
+                    allowFontScaling={false}
+                  >
+                    {busyId === String(child.ID) ? "Deleting…" : "Delete"}
+                  </TText>
+                </TouchableOpacity>
+              </>
+            )}
+          </View>
+  
+          {/* Like */}
+          <TouchableOpacity
+            onPress={() => !busyChild && onToggleCommentLike?.(String(child.ID))}
+            disabled={!!busyChild}
+            hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+            style={{
+              flexDirection: "row",
+              alignItems: "center",
+              marginRight: 12,
+              opacity: busyChild ? 0.5 : 1,
+              marginTop: 6,
+            }}
+          >
+            <Ionicons
+              name={child.is_liked ? "heart" : "heart-outline"}
+              size={16}
+              color={child.is_liked ? COLORS.accent : COLORS.icon}
+            />
+            <Text style={{ color: COLORS.text, marginLeft: 6, fontSize: 12 }}>
+              {Number(child.like_count || 0)}
+            </Text>
+          </TouchableOpacity>
+        </View>
+      </View>
+    );
+  };
+  
+
+const renderRoot = ({ item }: { item: CommentNode }) => {
+  const busyRoot = isCommentLikeBusy?.(String(item.ID));
+  const rootAvatar = normalizeAvatarUri(item.author_profile_image);
+
+  return (
     <View style={{ paddingVertical: 10, paddingHorizontal: 12 }}>
       <View style={{ flexDirection: "row", alignItems: "flex-start" }}>
-        <TouchableOpacity onPress={() => onPressProfile(String(item.user_id))} style={{ marginRight: 10, marginTop: 2 }}>
-          <Avatar
-            uri={rootAvatar }
-            name={item.author}
-            size={20}
-            border
-          />
+        {/* Avatar */}
+        <TouchableOpacity
+          onPress={() => onPressProfile(String(item.user_id))}
+          style={{ marginRight: 10, marginTop: 2 }}
+        >
+          <Avatar uri={rootAvatar} name={item.author} size={20} border />
         </TouchableOpacity>
 
+        {/* Content */}
         <View style={{ flex: 1 }}>
           {editingId === String(item.ID) ? (
+            // Editing mode (keep as is)
             <View style={{ gap: 8 }}>
-              <Text style={styles(COLORS).commentLine} allowFontScaling={false}>{item.author}</Text>
+              <Text style={styles(COLORS).commentLine} allowFontScaling={false}>
+                {item.author}
+              </Text>
             </View>
           ) : (
-            <Text style={styles(COLORS).commentLine} allowFontScaling={false}>
-              <Text style={styles(COLORS).commentAuthor} allowFontScaling={false}>{item.author}</Text>
-              <TText style={styles(COLORS).commentText} allowFontScaling={false}> </TText>
+            // ✅ Normal mode: AUTHOR in one line, COMMENT in next line
+            <View>
+              <Text style={styles(COLORS).commentAuthor} allowFontScaling={false}>
+                {item.author}
+              </Text>
+
               <MentionsText
                 text={normalizeEmoji(String(item.content || ""))}
                 onPressUsername={onPressMention}
                 normalStyle={styles(COLORS).commentText}
               />
-            </Text>
+            </View>
           )}
 
+          {/* Actions */}
           <View style={{ flexDirection: "row", alignItems: "center", columnGap: 16 }}>
             <TouchableOpacity onPress={() => handleReply(item)} style={styles(COLORS).chipBtn}>
-              <TText style={styles(COLORS).replyTxt} allowFontScaling={false}>Reply</TText>
+              <TText style={styles(COLORS).replyTxt} allowFontScaling={false}>
+                Reply
+              </TText>
             </TouchableOpacity>
 
             {isMine(item) && editingId !== String(item.ID) && (
               <>
-                <TouchableOpacity disabled={busyId === String(item.ID)} onPress={() => startEdit(item)} style={styles(COLORS).chipBtn}>
-                  <TText style={styles(COLORS).replyTxt} allowFontScaling={false}>Edit</TText>
+                <TouchableOpacity
+                  disabled={busyId === String(item.ID)}
+                  onPress={() => startEdit(item)}
+                  style={styles(COLORS).chipBtn}
+                >
+                  <TText style={styles(COLORS).replyTxt} allowFontScaling={false}>
+                    Edit
+                  </TText>
                 </TouchableOpacity>
-                <TouchableOpacity disabled={busyId === String(item.ID)} onPress={() => confirmDelete(String(item.ID))} style={styles(COLORS).chipBtn}>
-                  <TText style={[styles(COLORS).replyTxt, { color: "#EF2C2C" }]} allowFontScaling={false}>
+
+                <TouchableOpacity
+                  disabled={busyId === String(item.ID)}
+                  onPress={() => confirmDelete(String(item.ID))}
+                  style={styles(COLORS).chipBtn}
+                >
+                  <TText
+                    style={[styles(COLORS).replyTxt, { color: "#EF2C2C" }]}
+                    allowFontScaling={false}
+                  >
                     {busyId === String(item.ID) ? "Deleting…" : "Delete"}
                   </TText>
                 </TouchableOpacity>
@@ -545,31 +593,40 @@ const normalizeAvatarUri = (raw?: string | null): string | undefined => {
             )}
           </View>
 
+          {/* Replies */}
           {item.children?.length ? (
-            <View style={{ marginTop: 8, marginLeft: 26 }}>{item.children.map(renderChild)}</View>
+            <View style={{ marginTop: 8, marginLeft: 26 }}>
+              {item.children.map(renderChild)}
+            </View>
           ) : null}
         </View>
-        <TouchableOpacity
-        onPress={() => !busyRoot && onToggleCommentLike(String(item.ID))}
-        disabled={!!busyRoot}
-        hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
-        style={{ flexDirection: "row", alignItems: "center", marginRight: 12, opacity: busyRoot ? 0.5 : 1 }}
-      >
-        <Ionicons
-          name={item.is_liked ? "heart" : "heart-outline"}
-          size={16}
-          color={item.is_liked ? COLORS.accent : COLORS.icon}
-        />
-        <Text style={{ color: COLORS.text, marginLeft: 6, fontSize: 12 }}>
-          {Number(item.like_count || 0)}
-        </Text>
-      </TouchableOpacity>
-    </View>
 
+        {/* Like */}
+        <TouchableOpacity
+          onPress={() => !busyRoot && onToggleCommentLike(String(item.ID))}
+          disabled={!!busyRoot}
+          hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+          style={{
+            flexDirection: "row",
+            alignItems: "center",
+            marginRight: 12,
+            opacity: busyRoot ? 0.5 : 1,
+          }}
+        >
+          <Ionicons
+            name={item.is_liked ? "heart" : "heart-outline"}
+            size={16}
+            color={item.is_liked ? COLORS.accent : COLORS.icon}
+          />
+          <Text style={{ color: COLORS.text, marginLeft: 6, fontSize: 12 }}>
+            {Number(item.like_count || 0)}
+          </Text>
+        </TouchableOpacity>
       </View>
-  
+    </View>
   );
-}
+};
+
 
   /* ------------ UI ------------ */
   return (
@@ -773,6 +830,7 @@ const styles = (COLORS: any) =>
       borderLeftColor: COLORS.border,
       paddingLeft: 12,
     },
+    
 
     // action text (Reply/Edit/Delete)
     chipBtn: { paddingVertical: 6, paddingHorizontal: 4, borderRadius: 6 },

@@ -14,6 +14,7 @@ import { useSelector } from 'react-redux';
 import { uploaddocumnetaws } from '../../utils/Awsfile';
 import { AvoidSoftInput, AvoidSoftInputView } from 'react-native-avoid-softinput';
 import Avatar from "../../utils/Avatar";
+import { sendchatnotify } from '../../utils/apiconfig';
 const COLORS = { bg:'#0B0B12', card:'#15151F', me:'rgba(82,68,171,0.18)', text:'#EDEDF4', sub:'#9A9AA5', line:'rgba(255,255,255,0.08)', primary:'#F44336',  border:'#1F2127' };
 const DUMMY_AVATAR = 'https://i.pravatar.cc/150?img=1';
 const DEFAULT_GROUP_AVATAR = 'https://upload.wikimedia.org/wikipedia/commons/thumb/b/bc/Unknown_person.jpg/1200px-Unknown_person.jpg';
@@ -42,6 +43,7 @@ type GroupDoc = {
   avatar?: string;
   members: string[];
   updatedAt?: any;
+  updatedMs?: number;  
   lastmsg?: string;
   lastSentBy?: string;
   reads?: Record<string, any>;
@@ -113,7 +115,26 @@ export default function GroupChat({ navigation, route }: any) {
     userprofile?.User_Firebase_UID ??
     ''
   );
-
+  const myIdCandidates = useMemo(() => {
+    const u = userprofile || {};
+    return [
+      u?.ID,
+      u?.user?.id,
+      u?.User_PkeyID,
+      u?.User_Firebase_UID,
+      String(u?.ID ?? ""),
+      String(u?.user?.id ?? ""),
+      String(u?.User_PkeyID ?? ""),
+      String(u?.User_Firebase_UID ?? ""),
+    ].map(x => String(x || "")).filter(Boolean);
+  }, [userprofile]);
+  
+  const myGroupKey = useMemo(() => {
+    // group.members me jo id match kare, wahi use karo
+    const mem = (group?.members || []).map(String);
+    return myIdCandidates.find(k => mem.includes(k)) || myUid; // fallback
+  }, [group?.members, myIdCandidates, myUid]);
+  
   const myName = userprofile?.display_name ?? userprofile?.username ?? 'Me';
   const myAvatar = userprofile?.meta?.profile_image || userprofile?.User_Image_Path || DUMMY_AVATAR;
 
@@ -136,38 +157,21 @@ export default function GroupChat({ navigation, route }: any) {
   const groupDoc = useMemo(() => db.collection('groups').doc(groupId), [db, groupId]);
   const msgCol = useMemo(() => groupDoc.collection('messages'), [groupDoc]);
 // --- Read markers ---
+// console.log("[GroupChat KEY]", { myUid, myIdCandidates, myGroupKey, groupReadsKeys: Object.keys(group.reads || {}), groupReadsMsKeys: Object.keys(group.readsMs || {}) });
+
 const markRead = useCallback(() => {
-  if (!myUid) {
-    console.log("[MARK READ] no myUid");
-    return;
-  }
+  if (!myGroupKey) return;
+  const now = Math.max(Date.now(), Number(group?.updatedMs || 0));
 
-  const now = Date.now();
-
-  console.log("[MARK READ] writing:", {
-    groupId,
-    myUid,
-    now
-  });
 
   groupDoc.set({
-    [`reads.${myUid}`]: firestore.FieldValue.serverTimestamp(),
-    [`readsMs.${myUid}`]: now,
-    [`wm.${myUid}`]: now,
+    [`reads.${myGroupKey}`]: firestore.FieldValue.serverTimestamp(),
+    [`readsMs.${myGroupKey}`]: now,
+    [`wm.${myGroupKey}`]: now,
   }, { merge: true })
-  .then(() => {
-    console.log("[MARK READ] success");
-  })
-  .catch(err => {
-    console.log("[MARK READ] ERROR:", err);
-  });
-}, [groupDoc, myUid]);
-useEffect(() => {
-  if (group && group.id) {
-    console.log("[GROUP UPDATED] Trigger markRead");
-    markRead();
-  }
-}, [group]);
+  .catch(err => console.warn("[markRead] FAIL", err?.code, err?.message));
+}, [groupDoc, myGroupKey, group?.updatedMs]);
+
 
 
 useFocusEffect(useCallback(() => {
@@ -176,37 +180,90 @@ useFocusEffect(useCallback(() => {
 }, [markRead]));
 
 // ✅ mark once more when leaving GroupChat (unmount)
+useEffect(() => {
+  return () => { markRead(); };
+}, [markRead]);
+const getGroupTokens = async (members: string[], myUid: string) => {
+  if (!members?.length) return [];
 
+  const snaps = await Promise.all(
+    members
+      .filter(uid => String(uid) !== String(myUid)) // ❌ no self notification
+      .map(uid =>
+        firestore()
+          .collection("users")
+          .doc(String(uid))
+          .get()
+      )
+  );
+
+  const tokens = snaps
+    .map(s => s.data()?.fcmToken)
+    .filter(Boolean);
+
+  console.log("🔍 [getGroupTokens]", tokens.length, "tokens found");
+
+  return tokens;
+};
 
   /* ----------------- Header (tap to settings) -------------- */
-  useEffect(() => {
-    navigation.setOptions({
-      headerShown: true,
-      headerStyle: { backgroundColor: COLORS.bg },
-      headerTintColor: '#fff',
-      headerTitle: () => (
-        <TouchableOpacity
-          activeOpacity={0.8}
-          onPress={() => navigation.navigate('GroupSettings', { groupId })}
-          style={{ flexDirection: 'row', alignItems: 'center' }}
-        >
-            < Avatar name={group.name} size={28} border />
-          {/* <Image source={{ uri: group.avatar || DEFAULT_GROUP_AVATAR }} style={{ width: 30, height: 30, borderRadius: 15, backgroundColor: '#222', marginRight: 8 }} /> */}
-          <View style={{marginLeft:10}}>
-            <Text numberOfLines={1} style={{ color: '#fff', fontWeight: '700', fontSize: 16, maxWidth: SCREEN_H * 0.4 }}>
-              {group.name}
-            </Text>
-            <Text style={{ color: COLORS.sub, fontSize: 11 }}>{group.members?.length || 1} members</Text>
-          </View>
-        </TouchableOpacity>
-      ),
-      headerRight: () => (
-        <TouchableOpacity onPress={() => navigation.navigate('GroupSettings', { groupId })} style={{ paddingHorizontal: 12 }}>
-          <Feather name="more-horizontal" size={20} color="#fff" />
-        </TouchableOpacity>
-      ),
-    });
-  }, [navigation, group.name, group.avatar, group.members?.length, groupId]);
+/* ----------------- Header (tap to settings) -------------- */
+useEffect(() => {
+  navigation.setOptions({
+    headerShown: true,
+    headerBackTitleVisible: false,
+    headerStyle: { backgroundColor: COLORS.bg },
+    headerTintColor: '#fff',
+
+    // 👇 add this
+    headerLeft: () => (
+      <TouchableOpacity
+        onPress={() => navigation.goBack()}
+        style={{ paddingHorizontal: 12 }}
+        hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
+      >
+        <Feather name="chevron-left" size={24} color="#fff" />
+      </TouchableOpacity>
+    ),
+ 
+    
+    headerTitle: () => (
+      <TouchableOpacity
+        activeOpacity={0.8}
+        onPress={() => navigation.navigate('GroupSettings', { groupId })}
+        style={{ flexDirection: 'row', alignItems: 'center' }}
+      >
+        <Avatar name={group.name} size={28} border />
+        <View style={{ marginLeft: 10 }}>
+          <Text
+            numberOfLines={1}
+            style={{
+              color: '#fff',
+              fontWeight: '700',
+              fontSize: 16,
+              maxWidth: SCREEN_H * 0.4,
+            }}
+          >
+            {group.name}
+          </Text>
+          <Text style={{ color: COLORS.sub, fontSize: 11 }}>
+            {group.members?.length || 1} members
+          </Text>
+        </View>
+      </TouchableOpacity>
+    ),
+
+    headerRight: () => (
+      <TouchableOpacity
+        onPress={() => navigation.navigate('GroupSettings', { groupId })}
+        style={{ paddingHorizontal: 12 }}
+      >
+        <Feather name="more-horizontal" size={20} color="#fff" />
+      </TouchableOpacity>
+    ),
+  });
+}, [navigation, group.name, group.avatar, group.members?.length, groupId]);
+
 
   /* --------------------------- Live group doc ------------------------------ */
   useEffect(() => {
@@ -220,6 +277,7 @@ useFocusEffect(useCallback(() => {
             avatar: data.avatar ?? g.avatar,
             members: Array.isArray(data.members) ? data.members.map(String) : g.members,
             updatedAt: data.updatedAt,
+            updatedMs: Number(data.updatedMs || 0),
             lastmsg: data.lastmsg,
             lastSentBy: data.lastSentBy,
             reads: data.reads || g.reads,
@@ -307,6 +365,64 @@ useFocusEffect(useCallback(() => {
         { merge: true }
       );
       await batch.commit();
+      try {
+        console.log("✅ [SEND] Firestore batch committed", { id, lastText });
+      
+        console.log("🔔 [GROUP_PUSH] Start", {
+          groupId,
+          myUid,
+          membersCount: group?.members?.length || 0,
+          groupName: group?.name,
+        });
+      
+        const tokens = await getGroupTokens(group.members, myUid);
+      console.log("tokens",tokens)
+  
+        console.log("✅ [GROUP_PUSH] Tokens fetched", {
+          totalTokens: tokens.length,
+          tokensPreview: tokens.map(t => String(t).slice(0, 20) + "..."),
+        });
+      
+        if (!tokens.length) {
+          console.log("⚠️ [GROUP_PUSH] No tokens found. Skip push.");
+        } else {
+          const notifPayload = {
+            UserTokens: tokens.join(","),
+            message: lastText,
+            msgtitle: group.name,
+            User_PkeyID: myUid,
+            UserID: 0,
+            NTN_C_L: 1,
+          };
+      
+          console.log("📦 [GROUP_PUSH] notifPayload ready", {
+            ...notifPayload,
+            UserTokens: `(${tokens.length} tokens)`,
+          });
+      const res=await sendchatnotify(JSON.stringify(notifPayload))
+          // const res = await fetch(
+          //   "https://napi.nearbuy.space/api/NoctimagoApi/sendNotificationMultiple",
+          //   {
+          //     method: "POST",
+          //     headers: { "Content-Type": "application/json" },
+          //     body: JSON.stringify(notifPayload),
+          //   }
+          // );
+      
+          // console.log("📡 [GROUP_PUSH] HTTP Response", res,notifPayload);
+      
+          // const bodyText = await res.text();
+          // console.log("🧾 [GROUP_PUSH] Response Body:", bodyText);
+      
+          // // if (res.ok) console.log("✅ [GROUP_PUSH] Push sent successfully!");
+          // else console.log("❌ [GROUP_PUSH] Push failed!");
+        }
+      } catch (e: any) {
+        console.log("💥 [GROUP_PUSH] Exception:", e?.message, e?.stack);
+      }
+      
+      
+      
       // optionally mark myself read (I obviously saw my own message)
       markRead();
     } catch (e: any) {
@@ -529,6 +645,8 @@ useFocusEffect(useCallback(() => {
         paddingBottom: COMPOSER_H + Math.max(insets.bottom, 16) + EXTRA_GAP,
       }}
       keyboardShouldPersistTaps="handled"
+      keyboardDismissMode={Platform.OS === 'ios' ? 'interactive' : 'on-drag'}  // 👈 swipe to close
+      onScrollBeginDrag={() => Keyboard.dismiss()}                              // 👈 extra safety
       removeClippedSubviews={false}
       initialNumToRender={20}
       windowSize={10}
@@ -540,9 +658,10 @@ useFocusEffect(useCallback(() => {
       }}
     />
   );
+  
 
   const Composer = (
-    <View style={[styles.composer, { paddingBottom: Math.max(insets.bottom, 8) }]}>
+    <View style={[styles.composer, { paddingBottom: Math.max(insets.bottom, 40) }]}>
       <TouchableOpacity onPress={pickImage} style={styles.mediaBtn}>
         <Feather name="image" size={18} color={COLORS.primary} />
       </TouchableOpacity>
@@ -606,11 +725,16 @@ useFocusEffect(useCallback(() => {
 
   if (isIOS) {
     return (
-      <KeyboardAvoidingView style={{ flex: 1 }} behavior="padding" keyboardVerticalOffset={headerHeight}>
+      <View
+        style={{ flex: 1 }}
+        // behavior="padding"
+        // keyboardVerticalOffset={headerHeight}   // height of native header
+      >
         {Body}
-      </KeyboardAvoidingView>
+      </View>   
     );
   }
+  
   return Body;
 }
 
@@ -646,7 +770,7 @@ const styles = StyleSheet.create({
   inputPill: {
     flex: 1, backgroundColor: '#1A1A25', marginRight: 12,
     paddingHorizontal: 14, paddingVertical: 10, borderRadius: 22,
-    minHeight: 44, justifyContent: 'center',
+    minHeight: 44, justifyContent: 'center'
   },
   input: { color: COLORS.text, fontSize: 16, maxHeight: 120 },
   sendFab: {

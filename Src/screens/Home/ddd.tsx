@@ -1,5 +1,5 @@
 // src/screens/Home/HomeScreen.tsx
-import React, { useEffect, useMemo, useRef, useState,useCallback } from "react";
+import React, { useEffect, useMemo, useRef, useState, useCallback } from "react";
 import { useIsFocused, useFocusEffect, useNavigation } from "@react-navigation/native";
 import {
   View,
@@ -23,7 +23,7 @@ import {
   ActivityIndicator,
 } from "react-native";
 import Ionicons from "react-native-vector-icons/Ionicons";
-import { UIManager, findNodeHandle } from "react-native";
+import { findNodeHandle } from "react-native";
 import { AvoidSoftInput, AvoidSoftInputView } from "react-native-avoid-softinput";
 import {
   getallpost,
@@ -36,6 +36,7 @@ import {
   getnotify,
 } from "../../utils/apiconfig";
 import { UserProfile } from "../../store/action/auth/action";
+import { createThumbnail } from "react-native-create-thumbnail";
 import { useSelector, useDispatch } from "react-redux";
 import { TText } from "../../i18n/TText";
 import DateTimePickerModal from "react-native-modal-datetime-picker";
@@ -44,9 +45,19 @@ import Geolocation from "react-native-geolocation-service";
 import Video from "react-native-video";
 import type { ViewToken } from "react-native";
 import Avatar from "../../utils/Avatar";
-import mobileAds from 'react-native-google-mobile-ads';
-import { BannerAd, BannerAdSize, TestIds } from 'react-native-google-mobile-ads';
-/* ----------------------------- UI consts ----------------------------- */
+import mobileAds, { MaxAdContentRating } from "react-native-google-mobile-ads";
+import {
+  BannerAd,
+  BannerAdSize,
+  InterstitialAd,
+  AdEventType,
+  TestIds
+} from "react-native-google-mobile-ads";
+
+
+
+import CommentsModal from "../../components/CommentsModal";
+
 const COLORS = {
   bg: "#0B0C0F",
   surface: "#101217",
@@ -69,22 +80,36 @@ const FILTERS = [
   { key: "date", label: "By Date/Event", icon: "calendar" },
   { key: "video", label: "Video Only", icon: "videocam-outline" },
 ] as const;
+const videoThumbCache: Record<string, string> = {}; // videoUrl -> local thumb path
 
-/* -------------------- API Types & Card Model -------------------- */
+async function getVideoThumb(videoUrl: string): Promise<string | null> {
+  const key = (videoUrl || "").trim();
+  if (!key) return null;
 
+  if (videoThumbCache[key]) return videoThumbCache[key];
+
+  try {
+    const t = await createThumbnail({
+      url: key,
+      timeStamp: 1000, // 1s frame
+    });
+    videoThumbCache[key] = t.path;
+    return t.path;
+  } catch (e) {
+    return null;
+  }
+}
 type ApiComment = {
   ID: string | number;
   content: string;
   date: string;
-  isPending?: boolean
-
-  // the new API gives this:
+  isPending?: boolean;
   parent_id?: string | number;
-
-  // normalized author fields (from { author: { id, name, profile_image } })
-  author?: string;                    // display name ("priya")
-  user_id?: string | number;          // "2628"
-  author_profile_image?: string;      // avatar url
+  author?: string;
+  user_id?: string | number;
+  author_profile_image?: string;
+  is_liked?: boolean;
+  like_count?: number;
 };
 
 type ApiPost = {
@@ -96,9 +121,10 @@ type ApiPost = {
   date: string;
   fields: {
     event?: string;
-    tag_people?: string;
+    event_description?: string;     
+    tag_people?: string | ApiTagPerson[] | false; 
     location?: string;
-    images?: string; // CSV
+    images?: string;
     video?: string;
     custom_post_type?: string;
     _likes?: number | string;
@@ -109,8 +135,7 @@ type ApiPost = {
     is_followed?: boolean | "true" | "false" | "1" | "0" | string;
     reposted_by_users?: { ID?: string | number } | false;
     repost_count?: number | string;
-    isPending: true,
-
+    isPending: true;
   };
   is_reposted_by_user?: boolean | "true" | "false" | 1 | 0;
   repost_count?: number | string;
@@ -119,7 +144,6 @@ type ApiPost = {
   liked_by_user?: boolean | "true" | "false" | "1" | "0" | string;
   is_saved?: boolean | "true" | "false" | "1" | "0" | string;
   comments?: ApiComment[];
-  
 };
 
 type PostCardModel = {
@@ -127,41 +151,42 @@ type PostCardModel = {
   author: string;
   authorId?: string;
   areFriends?: boolean;
+  description?: string; 
   following?: boolean;
   avatar: string;
   title: string;
   timeAgo: string;
-  image: string;      // first image (fallback/poster)
-  images: string[];   // ALL images for the carousel
+  image: string;
+  images: string[];
   likes: number;
   comments: number;
   commentsList: ApiComment[];
   hasVideo: boolean;
-  videoUrl?: string;
+  videoUrl?: string;  
+  videoUrls?: string[];
   imagesCount: number;
   event?: string;
   location?: string;
   rawDate?: string;
   liked?: boolean;
   saved?: boolean;
-  tags?: string[]; 
+  tags?: string[];
   repostCount: number;
   isRepostedByMe: boolean;
-   isRepostCard: boolean;           // show the "X reposted" banner
+  isRepostCard: boolean;
   repostedById?: string;
   repostedByName?: string;
-  repostedByAvatar?: string;       // optional, if you want to show their avatar
-  repostedAt?: string;     
+  repostedAt?: string;
+  videoThumb?: string;     // 👈 add
+  videoThumbs?: string[]
 };
 
-/* --------------------------- Helpers ---------------------------- */
+type TaggedUser = { id: string; username: string };
+
 const getParentId = (c: ApiComment): string | null => {
   const s = String(c.parent_id ?? "").trim().toLowerCase();
   return !s || s === "0" || s === "null" || s === "undefined" || s === "nan" ? null : s;
 };
-
-
-
 
 const norm = (s?: string) =>
   (s || "")
@@ -178,14 +203,11 @@ function parseCsvImages(csv?: string): string[] {
     .filter(Boolean);
 }
 
-/** Parse "YYYY-MM-DD HH:mm:ss" coming from server as UTC */
 function parseSqlAsUTC(sql?: string): Date | null {
   if (!sql) return null;
   const hasTZ = /[zZ]|[+-]\d{2}:?\d{2}$/.test(sql);
   if (hasTZ) return new Date(sql.replace(" ", "T"));
-  const m = sql.match(
-    /^(\d{4})-(\d{2})-(\d{2})[ T](\d{2}):(\d{2})(?::(\d{2}))?$/
-  );
+  const m = sql.match(/^(\d{4})-(\d{2})-(\d{2})[ T](\d{2}):(\d{2})(?::(\d{2}))?$/);
   if (!m) return null;
   const [, y, mo, d, h, mi, s] = m;
   return new Date(Date.UTC(+y, +mo - 1, +d, +h, +mi, +(s || 0)));
@@ -281,16 +303,13 @@ const matchesTokens = (p: ApiPost, tokens: QueryTokens) => {
   const tEvent = norm(p.fields?.event || "");
   const tLoc = norm(p.fields?.location || "");
   const d = dateOnly(p.date);
-
   const textOk = tokens.text.every((tok) => tEvent.includes(tok));
   const titleOk = tokens.title.every((tok) => tTitle.includes(tok));
   const eventOk = tokens.event.every((tok) => tEvent.includes(tok));
   const locOk = tokens.location.every((tok) => tLoc.includes(tok));
-
   const onOk = tokens.on ? d && d.getTime() === tokens.on.getTime() : true;
   const beforeOk = tokens.before ? d && d.getTime() < tokens.before.getTime() : true;
   const afterOk = tokens.after ? d && d.getTime() > tokens.after.getTime() : true;
-
   return textOk && titleOk && eventOk && locOk && onOk && beforeOk && afterOk;
 };
 
@@ -317,32 +336,20 @@ function normalizeLikedUsers(val: any): string[] {
   }
   return [];
 }
-// cache to avoid refetching the same username repeatedly during a session
 const usernameIdCache: Record<string, string> = {};
 
-/** Look up a user id by @username. Returns user id string or null. */
-async function resolveUserIdByUsername(
-  username: string,
-  token?: string
-): Promise<string | null> {
+async function resolveUserIdByUsername(username: string, token?: string): Promise<string | null> {
   const key = username.toLowerCase();
   if (usernameIdCache[key]) return usernameIdCache[key];
-
   try {
-    // try server-side search (page 1 is enough for exact lookups)
-    const url = `https://noctimago.com/wp-json/app/v1/users?page=1&search=${encodeURIComponent(
-      username
-    )}`;
+    const url = `https://noctimago.com/wp-json/app/v1/users?page=1&search=${encodeURIComponent(username)}`;
     const res = await fetch(url, {
       headers: token ? { Authorization: `Bearer ${token}` } : undefined,
     });
     if (!res.ok) return null;
     const json = await res.json();
-    const list = mapUsersPayload(json); // from earlier step
-    // prefer exact username match, else first partial
-    const exact = list.find(
-      (u) => u.username.toLowerCase() === key && u.allowTag
-    );
+    const list = mapUsersPayload(json);
+    const exact = list.find((u) => u.username.toLowerCase() === key && u.allowTag);
     const found = exact || list.find((u) => u.allowTag);
     if (found?.id) {
       usernameIdCache[key] = found.id;
@@ -352,35 +359,93 @@ async function resolveUserIdByUsername(
   return null;
 }
 
-/* --------------------------- API helpers ------------------------ */
-// NEW: fetch comments for a post + normalize them into ApiComment[]
 async function fetchPostComments(postId: string | number, token?: string): Promise<{ total: number; comments: ApiComment[] }> {
   const url = `https://noctimago.com/wp-json/app/v1/post_comments/${postId}`;
-  const res = await fetch(url, {
-    headers: token ? { Authorization: `Bearer ${token}` } : undefined,
-  });
-
-  if (!res.ok) {
+  const res = await fetch(`https://noctimago.com/wp-json/app/v1/post_comments/${postId}?ts=${Date.now()}`, {
+    headers: {
+      ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      "Cache-Control": "no-cache",
+      Pragma: "no-cache",
+    },
+  });  if (!res.ok) {
     const txt = await res.text().catch(() => "");
     throw new Error(`comments HTTP ${res.status}: ${txt || "failed"}`);
   }
-
   const js = await res.json();
 
   const arr = Array.isArray(js?.comments) ? js.comments : [];
-  const normalized: ApiComment[] = arr.map((c: any) => ({
-    ID: String(c.ID),
-    content: String(c.content ?? ""),
-    date: String(c.date ?? ""),
-    parent_id: String(c.parent_id ?? "0"),
-    author: String(c.author?.name ?? ""),
-    user_id: c.author?.id ? String(c.author.id) : undefined,
-    author_profile_image: c.author?.profile_image || undefined,
-  }));
+ // HomeScreen.tsx -> fetchPostComments() mapping
+const toBool = (v: any) => {
+  if (typeof v === "boolean") return v;
+  if (typeof v === "number") return v !== 0;
+  if (typeof v === "string") {
+    const s = v.trim().toLowerCase();
+    return s === "true" || s === "1" || s === "yes";
+  }
+  return false;
+};
+
+const normalized: ApiComment[] = arr.map((c: any) => ({
+  ID: String(c.ID),
+  content: String(c.content ?? ""),
+  date: String(c.date ?? ""),
+  parent_id: String(c.parent_id ?? "0"),
+
+  author: String(c.author?.name ?? ""),
+  user_id: c.author?.id ? String(c.author.id) : undefined,
+  author_profile_image: c.author?.profile_image || undefined,
+
+  is_liked: toBool(c.is_liked),                // ← robust
+  like_count: Number(c.like_count ?? 0),
+}));
+
 
   const total = Number(js?.total_comments ?? normalized.length) || normalized.length;
   return { total, comments: normalized };
 }
+async function likeCommentApi(commentId: string, token?: string) {
+  console.log("token",token)
+  const url = `https://noctimago.com/wp-json/app/v1/like_comment/${commentId}`;
+  const res = await fetch(url, {
+    method: "POST",
+    headers: token ? { Authorization: `Bearer ${token}` } : undefined,
+  });
+  const text = await res.text();
+  console.log("[likeCommentApi]", { url, status: res.status, ok: res.ok, body: text?.slice(0, 400) });
+
+  let json: any = null; try { json = JSON.parse(text); } catch {}
+  if (!res.ok) {
+    const msg = json?.message || text || `HTTP ${res.status}`;
+    const err: any = new Error(msg);
+    err.status = res.status; err.body = text;
+    throw err;
+  }
+  return json ?? { ok: true };
+}
+
+async function unlikeCommentApi(commentId: string, token?: string) {
+  const url = `https://noctimago.com/wp-json/app/v1/unlike_comment/${commentId}`;
+  const res = await fetch(url, {
+    method: "POST",
+    headers: token ? { Authorization: `Bearer ${token}` } : undefined,
+  });
+  const text = await res.text();
+  console.log("[unlikeCommentApi]", { url, status: res.status, ok: res.ok, body: text?.slice(0, 400) });
+
+  let json: any = null; try { json = JSON.parse(text); } catch {}
+  if (!res.ok) {
+    const msg = json?.message || text || `HTTP ${res.status}`;
+    const err: any = new Error(msg);
+    err.status = res.status; err.body = text;
+    throw err;
+  }
+  return json ?? { ok: true };
+}
+
+
+
+
+
 
 async function unrepostApi(postId: string, token?: string) {
   const url = `https://noctimago.com/wp-json/app/v1/unrepost/${postId}`;
@@ -398,6 +463,16 @@ async function unrepostApi(postId: string, token?: string) {
   }
   return res.json().catch(() => ({}));
 }
+let lastShownAt = 0;
+
+function canShowInterstitialNow(minGapMs = 5 * 60 * 1000) {
+  const now = Date.now();
+  return now - lastShownAt > minGapMs;
+}
+
+function markInterstitialShown() {
+  lastShownAt = Date.now();
+}
 
 async function repostApi(originalPostId: string, token?: string) {
   const url = "https://noctimago.com/wp-json/app/v1/repost";
@@ -408,17 +483,15 @@ async function repostApi(originalPostId: string, token?: string) {
       ...(token ? { Authorization: `Bearer ${token}` } : {}),
     },
     body: JSON.stringify({ original_post_id: Number(originalPostId) }),
-   
   });
-  console.log("resss",originalPostId)
-  console.log("resss",res)
+  console.log("reposted",res)
   if (!res.ok) {
+
     const text = await res.text().catch(() => "");
     throw new Error(`Repost HTTP ${res.status}: ${text || "failed"}`);
   }
   return res.json().catch(() => ({}));
 }
-
 
 async function likePostApi(postId: string, token?: string) {
   try {
@@ -441,6 +514,7 @@ async function unlikePostApi(postId: string, token?: string) {
     console.log("[unliked] error =", error);
   }
 }
+
 async function commentPostApi(
   postId: string,
   text: string,
@@ -501,11 +575,6 @@ async function commentPostApi(
   return json;
 }
 
-
-
-
-
-/* --- Follow / Unfollow API helpers --- */
 async function followUserApi(userId: string, token?: string) {
   const url = `https://noctimago.com/wp-json/app/v1/follow_user/${userId}`;
   const res = await fetch(url, {
@@ -545,7 +614,6 @@ async function unsavePostApi(postId: string, token?: string) {
     throw error;
   }
 }
-/* --- Mention: Search Users API --- */
 type UserLite = {
   id: string;
   username: string;
@@ -587,7 +655,6 @@ async function searchUsersApi(query: string, token?: string, meId?: string): Pro
     if (res.ok) {
       const js = await res.json();
       let list = mapUsersPayload(js);
-      // filter
       list = list.filter(
         (u) =>
           u.allowTag &&
@@ -596,10 +663,7 @@ async function searchUsersApi(query: string, token?: string, meId?: string): Pro
       );
       return list.slice(0, 20);
     }
-  } catch {
-    // fallback: first 2 pages
-  }
-
+  } catch {}
   try {
     const pages = [1, 2];
     let all: UserLite[] = [];
@@ -618,6 +682,36 @@ async function searchUsersApi(query: string, token?: string, meId?: string): Pro
     return [];
   }
 }
+export async function updateCommentApi(commentId: string, text: string, token?: string) {
+  const res = await fetch(`https://noctimago.com/wp-json/app/v1/edit_comment/${commentId}`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      ...(token ? { Authorization: `Bearer ${token}` } : {}),
+    },
+    body: JSON.stringify({ comment: text }),
+  });
+  if (!res.ok) {
+    let msg = "HTTP " + res.status;
+    try { const j = await res.json(); msg = j?.message || msg; } catch {}
+    throw new Error(msg);
+  }
+  return res.json().catch(() => ({}));
+}
+
+export async function deleteCommentApi(commentId: string, token?: string) {
+  const res = await fetch(`https://noctimago.com/wp-json/app/v1/delete_comment/${commentId}`, {
+    method: "DELETE",
+    headers: token ? { Authorization: `Bearer ${token}` } : undefined,
+  });
+  if (!res.ok) {
+    let msg = "HTTP " + res.status;
+    try { const j = await res.json(); msg = j?.message || msg; } catch {}
+    throw new Error(msg);
+  }
+  return res.json().catch(() => ({}));
+}
+
 async function deletePostApi(postId: string | number, token?: string) {
   const url = `https://noctimago.com/wp-json/app/v1/delete-post/${postId}`;
   const res = await fetch(url, {
@@ -637,13 +731,9 @@ type CommentNode = ApiComment & { children: CommentNode[] };
 function threadifyComments(list: ApiComment[]): CommentNode[] {
   const byId = new Map<string, CommentNode>();
   const roots: CommentNode[] = [];
-
-  // seed
   list.forEach((c) => {
     byId.set(String(c.ID), { ...c, children: [] });
   });
-
-  // link
   list.forEach((c) => {
     const pid = getParentId(c);
     const node = byId.get(String(c.ID))!;
@@ -653,171 +743,281 @@ function threadifyComments(list: ApiComment[]): CommentNode[] {
       roots.push(node);
     }
   });
-
-  // optional: sort by date (oldest → newest)
   const sortTree = (arr: CommentNode[]) => {
     arr.sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime());
     arr.forEach((n) => sortTree(n.children));
   };
   sortTree(roots);
-
   return roots;
 }
 
-/* --------------------------- Component -------------------------- */
 export default function HomeScreen({ navigation }: any) {
   const dispatch = useDispatch();
   const token = useSelector((state: any) => state.authReducer.token);
   const userprofile = useSelector((state: any) => state.authReducer.userprofile);
   const isFocused = useIsFocused();
   const feedRef = useRef<FlatList<PostCardModel>>(null);
-  const [mentionOpen, setMentionOpen] = useState(false);
-  const [mentionQuery, setMentionQuery] = useState("");
-  const [mentionList, setMentionList] = useState<UserLite[]>([]);
-  const [mentionLoading, setMentionLoading] = useState(false);
-  const [tagged, setTagged] = useState<TaggedUser[]>([]);
-  const mentionRegex = /(^|\s)@([\w.\-]{0,30})$/i;
-  const debTimer = useRef<any>(null);
   const [refreshing, setRefreshing] = useState(false);
   const feedNodeRef = useRef<number | null>(null);
+// top-level state
+const getAllPostInFlight = useRef(false);
+const [loadingPosts, setLoadingPosts] = useState(true);      // replaces initialLoading for feed
+const [hasLoadedOnce, setHasLoadedOnce] = useState(false);   // prevents "No posts yet" on first paint
 
   useEffect(() => {
-    // capture the native node handle once the list mounts
-    // (re-run if feedRef changes)
     feedNodeRef.current = findNodeHandle(feedRef.current) as number | null;
-  }, [feedRef.current]);
+  }, []);
+  const [showBanner, setShowBanner] = useState(true);
   useEffect(() => {
-    // Initialize AdMob
     mobileAds()
-      .initialize()
-      .then(adapterStatuses => {
-        console.log('✅ AdMob initialized', adapterStatuses);
+      .setRequestConfiguration({
+        maxAdContentRating: MaxAdContentRating.PG,
+        tagForChildDirectedTreatment: false,
       })
-      .catch(err => console.warn('❌ AdMob init failed', err));
+      .then(() => mobileAds().initialize())
+      .then(() => console.log("AdMob initialized"));
   }, []);
   
-  // helper the child can call with an absolute Y (relative to the FlatList)
+  
+
   const scrollListToY = useCallback((absY: number) => {
-    // keep a little cushion so the input sits above the keyboard
     const cushion = Platform.select({ ios: 90, android: 110 })!;
     const offset = Math.max(0, absY - cushion);
     feedRef.current?.scrollToOffset({ offset, animated: true });
   }, []);
+
   const [active, setActive] = useState<(typeof FILTERS)[number]["key"]>("all");
   const [posts, setPosts] = useState<PostCardModel[]>([]);
   const [rawPosts, setRawPosts] = useState<ApiPost[]>([]);
-
-  // Nearby state (By Location)
   const [nearbyPosts, setNearbyPosts] = useState<PostCardModel[]>([]);
   const [rawNearby, setRawNearby] = useState<ApiPost[]>([]);
   const [nearbyLoading, setNearbyLoading] = useState(false);
   const [nearbyErr, setNearbyErr] = useState<string | null>(null);
   const [savingIds, setSavingIds] = useState<Set<string>>(new Set());
-
-  // local comment text per post
   const [commentDrafts, setCommentDrafts] = useState<Record<string, string>>({});
-  // Tabs underline
   const indicatorX = useRef(new Animated.Value(0)).current;
   const [tabsWidth, setTabsWidth] = useState(0);
   const tabWidth = tabsWidth > 0 ? tabsWidth / FILTERS.length : 0;
   const activeIndex = FILTERS.findIndex((f) => f.key === active);
-  const bannerAdId = __DEV__ ? TestIds.BANNER : 'ca-app-pub-2847186072494111~8751364810';
+// for android// const bannerAdId =  "ca-app-pub-2847186072494111/3698240885";
+// const INTERSTITIAL_UNIT_ID = __DEV__
+//   ? TestIds.INTERSTITIAL
+//   : "ca-app-pub-2847186072494111/5687551304"; // your real id
+// const bannerAdId= 'ca-app-pub-2847186072494111/9619792570'
+const bannerAdId= 'ca-app-pub-2847186072494111/9619792570'
+const INTERSTITIAL_UNIT_ID = __DEV__
+  ? TestIds.INTERSTITIAL
+  : "ca-app-pub-2847186072494111/6482385544"; // your real id
+
+
+const interstitialRef = useRef<InterstitialAd | null>(null);
+const [interstitialLoaded, setInterstitialLoaded] = useState(false);
+const wantsToShowRef = useRef(false);
+useEffect(() => {
+  console.log("[Ad] Home: creating interstitial for", INTERSTITIAL_UNIT_ID);
+
+  const ad = InterstitialAd.createForAdRequest(INTERSTITIAL_UNIT_ID, {
+    requestNonPersonalizedAdsOnly: false,
+  });
+
+  interstitialRef.current = ad;
+
+  // 🔹 LOADED
+  const unsubLoaded = ad.addAdEventListener(AdEventType.LOADED, () => {
+    console.log("[Ad][Home] LOADED");
+    setInterstitialLoaded(true);
+
+    if (wantsToShowRef.current) {
+      wantsToShowRef.current = false;
+      ad.show();
+      setInterstitialLoaded(false);
+    }
+  });
+
+  // 🔹 ERROR
+  const unsubError = ad.addAdEventListener(AdEventType.ERROR, (error) => {
+    console.log("[Ad][Home] ERROR", error?.message);
+    setInterstitialLoaded(false);
+  });
+
+  // 🔹 CLOSED
+  const unsubClosed = ad.addAdEventListener(AdEventType.CLOSED, () => {
+    console.log("[Ad][Home] CLOSED -> reload");
+    setInterstitialLoaded(false);
+    ad.load();
+  });
+
+  ad.load();
+
+  return () => {
+    console.log("[Ad][Home] cleanup");
+    unsubLoaded();
+    unsubError();
+    unsubClosed();
+  };
+}, []);
+
+
+
   const [datePickerVisible, setDatePickerVisible] = useState(false);
   const [selectedDate, setSelectedDate] = useState<Date | null>(null);
   const [fcmToken, setFcmToken] = useState("");
-  const runUserSearch = (q: string) => {
-    if (debTimer.current) clearTimeout(debTimer.current);
-    debTimer.current = setTimeout(async () => {
-      setMentionLoading(true);
-      const res = await searchUsersApi(q, token, meId);
-      setMentionList(res);
-      setMentionLoading(false);
-    }, 200);
-  };
-  // under other useStates in HomeScreen
-const [commentsByPost, setCommentsByPost] = useState<Record<string, { total: number; list: ApiComment[] }>>({});
-const [commentsLoading, setCommentsLoading] = useState<Record<string, boolean>>({});
+  const [commentsByPost, setCommentsByPost] = useState<Record<string, { total: number; list: ApiComment[] }>>({});
+  const [commentsLoading, setCommentsLoading] = useState<Record<string, boolean>>({});
 
-// helper to fetch & cache
-const loadCommentsForPost = useCallback(async (postId: string) => {
-  if (commentsLoading[postId]) return;
-  setCommentsLoading((m) => ({ ...m, [postId]: true }));
-  try {
-    const { total, comments } = await fetchPostComments(postId, token);
-    setCommentsByPost((m) => ({ ...m, [postId]: { total, list: comments } }));
-  } catch (e) {
-    console.warn("loadCommentsForPost error:", e);
-    setCommentsByPost((m) => ({ ...m, [postId]: { total: 0, list: [] } }));
-  } finally {
-    setCommentsLoading((m) => ({ ...m, [postId]: false }));
-  }
-}, [token, commentsLoading]);
+  const loadCommentsForPost = useCallback(
+    async (postId: string) => {
+      if (commentsLoading[postId]) return;
+      setCommentsLoading((m) => ({ ...m, [postId]: true }));
+      try {
+        const { total, comments } = await fetchPostComments(postId, token);
+        setCommentsByPost((m) => ({ ...m, [postId]: { total, list: comments } }));
+      } catch {
+        setCommentsByPost((m) => ({ ...m, [postId]: { total: 0, list: [] } }));
+      } finally {
+        setCommentsLoading((m) => ({ ...m, [postId]: false }));
+      }
+    },
+    [token, commentsLoading]
+  );
+  const [commentLikeBusy, setCommentLikeBusy] = useState<Set<string>>(new Set());
 
-  useEffect(() => {
-    const parent = navigation.getParent?.(); // the tab navigator
-    if (!parent) return;
+  // const [commentLikeBusy, setCommentLikeBusy] = useState<Set<string>>(new Set());
+
+  const toggleCommentLike = useCallback(
+    async (postId: string, commentId: string) => {
   
-    const unsub = parent.addListener('tabPress', (e: any) => {
-      // Only when Home is already focused
+      if (!token) {
+        Alert.alert("Sign in required", "You need to log in to like comments.");
+        return false;
+      }
+  
+      const key = `${postId}:${commentId}`;
+      if (commentLikeBusy.has(key)) return false;
+  
+      setCommentLikeBusy(prev => new Set(prev).add(key));
+  
+      // Get before-state for accuracy
+      const entry = commentsByPost[postId];
+      if (!entry) return false;
+      const current = entry.list.find(c => String(c.ID) === String(commentId));
+      if (!current) return false;
+  
+      const wasLikedBefore = !!current.is_liked;
+  
+      // ---- 1) OPTIMISTIC UPDATE (instant UI) ----
+      setCommentsByPost(prev => {
+        const e = prev[postId]; if (!e) return prev;
+        const list = e.list.map(c =>
+          String(c.ID) === String(commentId)
+            ? {
+                ...c,
+                is_liked: !wasLikedBefore,
+                like_count: wasLikedBefore
+                  ? Math.max(0, (c.like_count ?? 0) - 1)
+                  : (c.like_count ?? 0) + 1
+              }
+            : c
+        );
+        return { ...prev, [postId]: { ...e, list } };
+      });
+  
+      try {
+        // ---- 2) SERVER CALL ----
+        if (wasLikedBefore) {
+          await unlikeCommentApi(commentId, token);
+        } else {
+          await likeCommentApi(commentId, token);
+  
+          // 🔔 Notify comment author
+        const targetId = current.user_id; // set in fetchPostComments()
+        const me = String(userprofile?.ID ?? "");
+
+        if (targetId && String(targetId) !== me) {
+          const title = "New like on your comment";
+          const message = `${
+            userprofile?.username || userprofile?.display_name || "Someone"
+          } liked your comment`;
+          SendNotification(message, title, String(targetId), 1, Number(postId));
+        }
+      
+        }
+  
+        // ❌ DO NOT RELOAD COMMENTS HERE — that causes flicker  
+        // await loadComments();   <-- REMOVE THIS
+  
+        return true;
+      } catch (err) {
+        console.log("[toggleCommentLike] API failed, rolling back...");
+  
+        // ---- 3) ROLLBACK ON FAILURE ----
+        setCommentsByPost(prev => {
+          const e = prev[postId]; if (!e) return prev;
+          const list = e.list.map(c =>
+            String(c.ID) === String(commentId)
+              ? {
+                  ...c,
+                  is_liked: wasLikedBefore,
+                  like_count: wasLikedBefore
+                    ? (c.like_count ?? 0)
+                    : Math.max(0, (c.like_count ?? 0) - 1)
+                }
+              : c
+          );
+          return { ...prev, [postId]: { ...e, list } };
+        });
+  
+        Alert.alert("Oops", "Could not update like on comment.");
+        return false;
+      } finally {
+        setCommentLikeBusy(prev => {
+          const setCopy = new Set(prev);
+          setCopy.delete(key);
+          return setCopy;
+        });
+      }
+    },
+    [token, commentsByPost, setCommentsByPost, commentLikeBusy]
+  );
+  
+  
+  
+  
+  
+  useEffect(() => {
+    const parent = navigation.getParent?.();
+    if (!parent) return;
+    const unsub = parent.addListener("tabPress", () => {
       if (navigation.isFocused()) {
-        // scroll to top
         feedRef.current?.scrollToOffset({ offset: 0, animated: true });
-        // (optional) fetch newest posts after a short delay
         setTimeout(() => {
-          // choose one:
-           GetAllPost();            // only “All”
-          refresh();                  // your existing pull-to-refresh (keeps current tab logic)
+          GetAllPost();
+          refresh();
         }, 150);
       }
     });
-  
     return unsub;
-  }, [navigation, refresh]);
+  }, [navigation]);
+
   useEffect(() => {
     if (!posts.length) return;
-    // optional: only load for the first N or visible ones
     posts.forEach((p) => loadCommentsForPost(p.id));
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [posts, token]);
-  
-  const handleDraftChange = (t: string) => {
-    onChangeDraft(t);
-    const m = t.match(mentionRegex);
-    if (m) {
-      const q = m[2];
-      setMentionQuery(q);
-      setMentionOpen(true);
-      runUserSearch(q);
-    } else {
-      setMentionOpen(false);
-    }
-  };
-  
-  const insertMention = (u: UserLite) => {
-    const current = commentDraft || "";
-    const newText = current.replace(mentionRegex, (all, lead) => `${lead}@${u.username} `);
-    onChangeDraft(newText);
-    setTagged((prev) =>
-      prev.some((x) => x.id === u.id) ? prev : [...prev, { id: u.id, username: u.username }]
-    );
-    setMentionOpen(false);
-    setTimeout(() => inputRef.current?.focus(), 0);
-  };
-  
-  // 🔔 FCM init
+  }, [posts, token, loadCommentsForPost]);
+
   useEffect(() => {
     (async () => {
       const authStatus = await requestUserPermission();
       if (authStatus) {
         const fcmtoken = await getFcmToken();
-        if (!fcmtoken) {
-          Alert.alert("Please enable notifications to receive time-critical updates");
-        } else {
+        if (fcmtoken) {
           setFcmToken(fcmtoken);
+        } else {
+          Alert.alert("Please enable notifications to receive time-critical updates");
         }
       }
     })();
   }, []);
+
   function extractUnreadCount(payload: any): number {
     const pick = (obj: any): number => {
       if (!obj || typeof obj !== "object") return 0;
@@ -853,7 +1053,7 @@ const loadCommentsForPost = useCallback(async (postId: string) => {
     }
     return pick(payload);
   }
-  
+
   const fetchNotifications = React.useCallback(async () => {
     try {
       const payload = JSON.stringify({
@@ -879,112 +1079,29 @@ const loadCommentsForPost = useCallback(async (postId: string) => {
       setNotifCount(0);
     }
   }, [token, userprofile?.ID]);
-  
+
   useFocusEffect(
     React.useCallback(() => {
       let interval: NodeJS.Timeout | null = null;
-  
-      // Fetch immediately when screen focuses
       fetchNotifications();
-   
-    
-      // Repeat every 20 seconds (or adjust as you like)
-      interval = setInterval(fetchNotifications, 20000);
-  
-      // Clear when screen unfocuses
+      interval = setInterval(fetchNotifications, 10000);
       return () => {
         if (interval) clearInterval(interval);
       };
     }, [fetchNotifications])
   );
+  useFocusEffect(React.useCallback(() => { setNotifCount((c) => c); }, []));
+
   useFocusEffect(
     React.useCallback(() => {
       GetAllPost();
       setCommentsByPost({});
-      posts.forEach(p => fetchPostComments(p.id));
+      posts.forEach((p) => loadCommentsForPost(p.id));
+      return undefined;
     }, [token])
   );
-  
-  const refresh = async () => {
-    if (refreshing) return;
-    setRefreshing(true);
-    try {
-      await GetUserHome();
-      if (active === "location") {
-        await loadNearbyPosts();
-      } else {
-        await GetAllPost();
-        posts.forEach((p) => fetchPostComments(p.id));
-      }
-    } catch (e) {
-      console.log("[refresh] error", e);
-    } finally {
-      setRefreshing(false);
-    }
-  };
 
-  const GetUserHome = async () => {
-    try {
-      const res = await profile(token);
-      console.log("res",res)
-      dispatch(UserProfile(res.profile));
-    } catch (error) {
-      console.log("[GetUserHome] error =", error);
-    }
-  };
 
-  const SendNotification = async (
-    message: string,
-    title: string,
-    receiverId?: string,
-    type?: number,
-    postId?: number
-  ) => {
-    try {
-      const me = String(userprofile?.ID ?? "");
-      const rc = String(receiverId ?? "");
-  
-      // ✅ skip if no receiver or self
-      if (!rc || me === rc) {
-        console.log("[notify] skipped (self or empty)", { me, rc });
-        return;
-      }
-  
-      const payload = JSON.stringify({
-        UserToken: fcmToken,
-        message,
-        msgtitle: title,
-        User_PkeyID: userprofile?.ID,              // sender
-        UserID: rc,                                // receiver
-        NTN_C_L: type,
-        NTN_Sender_Name: userprofile?.meta?.first_name,
-        NTN_Sender_Img: userprofile?.meta?.profile_image,
-        NTN_Reciever_Name: "",
-        NTN_Reciever_Img: "",
-        NTN_UP_PkeyID: postId,
-        NTN_UP_Path: "",
-      });
-  
-      await sendnotify(payload, token);
-    } catch (err) {
-      console.warn("Notify error:", err);
-    }
-  };
-  
-
-  const GetAllPost = async () => {
-    try {
-      const res = await getallpost(token);
-      const apiPosts: ApiPost[] = res?.posts ?? [];
-
-      setRawPosts(apiPosts);
-      const mapped = apiPosts.map((p) => mapApiPostToCard(p, userprofile?.ID));
-      setPosts(mapped);
-      mapped.forEach((p) => loadCommentsForPost(p.id));
-    } catch (error) {
-      console.log("[GetAllPost] error =", error);
-    }
-  };
 
   useFocusEffect(
     React.useCallback(() => {
@@ -1003,6 +1120,140 @@ const loadCommentsForPost = useCallback(async (postId: string) => {
     }, [token])
   );
   
+  const GetUserHome = async () => {
+    try {
+      const res = await profile(token);
+      dispatch(UserProfile(res.profile));
+    } catch (error) {
+    }
+  };
+
+  const SendNotification = async (
+    message: string,
+    title: string,
+    receiverId?: string,
+    type?: number,
+    postId?: number
+  ) => {
+    try {
+      const me = String(userprofile?.ID ?? "");
+      const rc = String(receiverId ?? "");
+      if (!rc || me === rc) {
+        return;
+      }
+      const payload = JSON.stringify({
+        UserToken: fcmToken,
+        message,
+        msgtitle: title,
+        User_PkeyID: userprofile?.ID,
+        UserID: rc,
+        NTN_C_L: type,
+        NTN_Sender_Name: userprofile?.meta?.first_name,
+        NTN_Sender_Img: userprofile?.meta?.profile_image,
+        NTN_Reciever_Name: "",
+        NTN_Reciever_Img: "",
+        NTN_UP_PkeyID: postId,
+        NTN_UP_Path: "",
+      });
+      await sendnotify(payload, token);
+    } catch (err) {
+    }
+  };
+
+  const GetAllPost = useCallback(async () => {
+    if (getAllPostInFlight.current) return;        // avoid racing fetches
+    getAllPostInFlight.current = true;
+    setLoadingPosts(true);
+  
+    try {
+      const res = await getallpost(token);
+      const apiPosts: ApiPost[] = res?.posts ?? [];
+      const mapped = apiPosts.map((p) => mapApiPostToCard(p, userprofile?.ID));
+      setRawPosts(apiPosts);
+      setPosts(mapped);
+
+      // ✅ generate thumbs in background and patch posts
+      (async () => {
+        const updates: Record<string, { primary?: string; all?: string[] }> = {};
+      
+        await Promise.all(
+          mapped.map(async (p) => {
+            if (!p.hasVideo || !p.videoUrls?.length) return;
+      
+            const thumbs = await Promise.all(
+              p.videoUrls.map((u) => getVideoThumb(u))
+            );
+      
+            const clean = thumbs.filter(Boolean) as string[];
+            if (clean.length) {
+              updates[p.id] = { primary: clean[0], all: clean };
+            }
+          })
+        );
+      
+        if (Object.keys(updates).length) {
+          setPosts((prev) =>
+            prev.map((p) =>
+              updates[p.id]
+                ? {
+                    ...p,
+                    videoThumb: updates[p.id].primary || p.videoThumb,
+                    videoThumbs: updates[p.id].all || p.videoThumbs,
+                  }
+                : p
+            )
+          );
+        }
+      })();
+      
+  
+      // kick comment loads after posts are set (no forEach on stale state)
+      mapped.forEach((p) => loadCommentsForPost(p.id));
+  
+      setHasLoadedOnce(true);
+    } catch (error) {
+      console.log("GetAllPost error:", error);
+    } finally {
+      getAllPostInFlight.current = false;
+      // tiny delay smooths out ultra-fast flicker on some devices
+      setTimeout(() => setLoadingPosts(false), 120);
+    }
+  }, [token, userprofile?.ID, loadCommentsForPost]);
+  
+  
+  // top-level state
+
+  useEffect(() => {
+    if (!isFocused) return;
+  
+    // When Home gains focus (e.g. coming back from EditProfile)
+    GetUserHome();       // refresh userprofile (avatar, name etc.)
+    GetAllPost();        // refresh feed
+    fetchNotifications(); // refresh notification badge
+  }, [isFocused]);  // 👈 only depends on focus
+  
+// run once when screen mounts
+useEffect(() => {
+  (async () => {
+    await GetUserHome();
+    await GetAllPost();
+    if (active === "location") await loadNearbyPosts();
+  })();
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+}, []);
+
+const refresh = async () => {
+  if (refreshing) return;
+  setRefreshing(true);
+  try {
+    await GetUserHome();
+    if (active === "location") await loadNearbyPosts();
+    else await GetAllPost();
+  } finally {
+    setRefreshing(false);
+  }
+};
+
 
   useEffect(() => {
     Animated.spring(indicatorX, {
@@ -1013,21 +1264,19 @@ const loadCommentsForPost = useCallback(async (postId: string) => {
     }).start();
   }, [activeIndex, tabWidth, indicatorX]);
 
-  // stop all videos when list unmounts
   useEffect(() => () => setPlayMap({}), []);
 
   const onTabsLayout = (e: LayoutChangeEvent) => {
     setTabsWidth(e.nativeEvent.layout.width);
   };
 
-  /* ---------- Search open/close animations ---------- */
   const [query, setQuery] = useState("");
   const [searchOpen, setSearchOpen] = useState(false);
   const searchAnim = useRef(new Animated.Value(0)).current;
-// HomeScreen
-useEffect(() => {
-  if (searchOpen) setPlayMap({}); // pauses all Video (paused becomes true)
-}, [searchOpen]);
+
+  useEffect(() => {
+    if (searchOpen) setPlayMap({});
+  }, [searchOpen]);
 
   const openSearch = () => {
     setSearchOpen(true);
@@ -1037,9 +1286,30 @@ useEffect(() => {
       useNativeDriver: false,
     }).start();
   };
+  const safeShowInterstitial = () => {
+    if (!canShowInterstitialNow()) {
+      console.log("[Ad][Home] skipped due to cooldown");
+      return;
+    }
+  
+    const ad = interstitialRef.current;
+    if (ad && interstitialLoaded) {
+      ad.show();
+      markInterstitialShown();
+      setInterstitialLoaded(false);
+    } else {
+      wantsToShowRef.current = true;
+      // when LOADED, we show & mark there
+    }
+  };
+  
+  
   const openChat = () => {
+    // 🔹 optionally show interstitial before navigation
+     safeShowInterstitial(); // uncomment if you want this
     navigation.navigate("NotificationsScreen");
   };
+
   const closeSearch = (clear = false) => {
     if (clear) setQuery("");
     Animated.timing(searchAnim, {
@@ -1059,155 +1329,108 @@ useEffect(() => {
     inputRange: [0, 1],
     outputRange: [0, 1],
   });
+
   const onRepost = async (post: PostCardModel) => {
     try {
       if (!token) {
         Alert.alert("Sign in required", "Please log in to repost.");
         return;
       }
-  
-      // Safety: don't allow reposting your own post
       if (post.authorId && String(post.authorId) === String(userprofile?.ID)) {
         Alert.alert("Not allowed", "You cannot repost your own post.");
         return;
       }
       try {
         await repostApi(post.id, token);
-
-        // 🔔 Notify original author (skip self)
         if (post.authorId && String(post.authorId) !== String(userprofile?.ID)) {
           const title = "Repost";
           const message = `${userprofile?.username || "Someone"} reposted your post`;
-          // Use a distinct notification type code for reposts (e.g., 6)
           SendNotification(message, title, String(post.authorId), 1, Number(post.id));
         }
-
-        await GetAllPost(); // refresh feed if you want to show new repost
+        await GetAllPost();
         Alert.alert("Done", "Post reposted to your feed.");
       } catch (e: any) {
         Alert.alert("Repost failed", e?.message || "Please try again.");
       }
-      return 0
-      await repostApi(post.id, token);
-      Alert.alert(
-        "Repost this?",
-        "This will share the original post to your feed.",
-        [
-          { text: "Cancel", style: "cancel" },
-          {
-            text: "Repost",
-            style: "default",
-            onPress: async () => {
-              try {
-                await repostApi(post.id, token);
-  
-                // 🔔 Notify original author (skip self)
-                if (post.authorId && String(post.authorId) !== String(userprofile?.ID)) {
-                  const title = "Repost";
-                  const message = `${userprofile?.username || "Someone"} reposted your post`;
-                  // Use a distinct notification type code for reposts (e.g., 6)
-                  SendNotification(message, title, String(post.authorId), 1, Number(post.id));
-                }
-  
-                await GetAllPost(); // refresh feed if you want to show new repost
-                Alert.alert("Done", "Post reposted to your feed.");
-              } catch (e: any) {
-                Alert.alert("Repost failed", e?.message || "Please try again.");
-              }
-            },
-          },
-        ]
-      );
     } catch (e: any) {
       Alert.alert("Repost failed", e?.message || "Please try again.");
     }
   };
-  
-// HomeScreen.tsx
 
-const onUnrepost = async (post: PostCardModel) => {
-  try {
-    if (!token) {
-      Alert.alert("Sign in required", "Please log in to unrepost.");
-      return;
+  const onUnrepost = async (post: PostCardModel) => {
+    try {
+      if (!token) {
+        Alert.alert("Sign in required", "Please log in to unrepost.");
+        return;
+      }
+      Alert.alert("Unrepost this?", "It will be removed from your feed.", [
+        { text: "Cancel", style: "cancel" },
+        {
+          text: "Unrepost",
+          style: "destructive",
+          onPress: async () => {
+            try {
+              await unrepostApi(post.id, token);
+              await GetAllPost();
+              Alert.alert("Done", "Post unreposted.");
+            } catch (e: any) {
+              Alert.alert("Unrepost failed", e?.message || "Please try again.");
+            }
+          },
+        },
+      ]);
+    } catch (e: any) {
+      Alert.alert("Unrepost failed", e?.message || "Please try again.");
     }
-    Alert.alert("Unrepost this?", "It will be removed from your feed.", [
+  };
+
+  const onEditPost = (post: PostCardModel) => {
+    console.log("post",post)
+
+    navigation.navigate("EditPostScreen", {
+      postId: post.id,
+      initial: {
+        title: post.title || "",
+        event: post.event || "",
+        event_description: post?.description || "",  // 👈 IMPORTANT
+        tag_people: post?.tags
+        || [],
+        location: post.location || "",
+        images: post.images?.length ? post.images : post.image ? [post.image] : [],
+        video: post.hasVideo ? post.videoUrls || "" : "",
+      },
+    });
+  };
+
+  const onDeletePost = (post: PostCardModel) => {
+    Alert.alert("Delete post?", "Do you want to delete this post?.", [
       { text: "Cancel", style: "cancel" },
       {
-        text: "Unrepost",
+        text: "Delete",
         style: "destructive",
         onPress: async () => {
           try {
-            await unrepostApi(post.id, token);
-            await GetAllPost(); // refresh the feed
-            Alert.alert("Done", "Post unreposted.");
+            await deletePostApi(post.id, token);
+            setPosts((prev) => prev.filter((p) => p.id !== post.id));
+            setNearbyPosts((prev) => prev.filter((p) => p.id !== post.id));
+            Alert.alert("Deleted", "Your post has been removed.");
           } catch (e: any) {
-            Alert.alert("Unrepost failed", e?.message || "Please try again.");
+            Alert.alert("Delete failed", e?.message || "Please try again.");
           }
         },
       },
     ]);
-  } catch (e: any) {
-    Alert.alert("Unrepost failed", e?.message || "Please try again.");
-  }
-};
-
-const onEditPost = (post: PostCardModel) => {
-  navigation.navigate("EditPostScreen", {
-    postId: post.id,
-    initial: {
-      title: post.title || "",
-      event: post.event || "",
-      // 👇 pass CSV exactly like the API expects
-      tag_people: (post.tags || []).join(", "),
-      location: post.location || "",
-      images: post.images?.length ? post.images : (post.image ? [post.image] : []),
-      video: post.hasVideo ? (post.videoUrl || "") : "",
-    },
-  });
-};
-
-  
-  const onDeletePost = (post: PostCardModel) => {
-    Alert.alert(
-      "Delete post?",
-      "Do you want to delete this post?.",
-      [
-        { text: "Cancel", style: "cancel" },
-        {
-          text: "Delete",
-          style: "destructive",
-          onPress: async () => {
-            try {
-              await deletePostApi(post.id, token);
-              // Optimistic remove from lists
-              setPosts((prev) => prev.filter((p) => p.id !== post.id));
-              setNearbyPosts((prev) => prev.filter((p) => p.id !== post.id));
-              // Or re-fetch:
-              // await GetAllPost();
-              Alert.alert("Deleted", "Your post has been removed.");
-            } catch (e: any) {
-              Alert.alert("Delete failed", e?.message || "Please try again.");
-            }
-          },
-        },
-      ]
-    );
   };
-    
-  /* ----------------------- Nearby (By Location) ----------------------- */
+
   type Coords = { latitude: number; longitude: number };
 
   async function requestLocationPermission(): Promise<boolean> {
     if (Platform.OS === "android") {
-      const fine = await PermissionsAndroid.request(
-        PermissionsAndroid.PERMISSIONS.ACCESS_FINE_LOCATION,
-        {
-          title: "Location Permission",
-          message: "We use your location to find nearby posts.",
-          buttonPositive: "OK",
-        }
-      );
+      const fine = await PermissionsAndroid.request(PermissionsAndroid.PERMISSIONS.ACCESS_FINE_LOCATION, {
+        title: "Location Permission",
+        message: "We use your location to find nearby posts.",
+        buttonPositive: "OK",
+      });
       return fine === PermissionsAndroid.RESULTS.GRANTED;
     } else {
       const auth = await Geolocation.requestAuthorization("whenInUse");
@@ -1218,7 +1441,6 @@ const onEditPost = (post: PostCardModel) => {
   async function getCoords(): Promise<Coords> {
     const granted = await requestLocationPermission();
     if (!granted) throw new Error("Location permission denied");
-
     return new Promise((resolve, reject) => {
       Geolocation.getCurrentPosition(
         (pos) =>
@@ -1242,63 +1464,47 @@ const onEditPost = (post: PostCardModel) => {
     try {
       setNearbyLoading(true);
       setNearbyErr(null);
-
       const { latitude, longitude } = await getCoords();
       const radius = 1000;
-
       const url = `https://noctimago.com/wp-json/app/v1/nearby-posts?latitude=${latitude}&longitude=${longitude}&radius=${radius}`;
-
       const res = await fetch(url, {
         headers: token ? { Authorization: `Bearer ${token}` } : undefined,
       });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
-
       const json = await res.json();
       const apiPosts: ApiPost[] = json?.posts ?? json ?? [];
       setRawNearby(apiPosts);
       setNearbyPosts(apiPosts.map((p) => mapApiPostToCard(p, userprofile?.ID)));
     } catch (e: any) {
-      console.warn("[nearby-posts] error", e);
-      setNearbyErr(
-        e?.message?.toLowerCase().includes("denied")
-          ? "Location not allowed. Enable it to see nearby posts."
-          : "Could not load nearby posts."
-      );
+      setNearbyErr(e?.message?.toLowerCase().includes("denied") ? "Location not allowed. Enable it to see nearby posts." : "Could not load nearby posts.");
       setRawNearby([]);
       setNearbyPosts([]);
     } finally {
       setNearbyLoading(false);
     }
   }
+
   useEffect(() => {
     AvoidSoftInput.setEnabled(true);
     AvoidSoftInput.setAvoidOffset(12);
     return () => AvoidSoftInput.setEnabled(false);
   }, []);
-  
 
-  // Filtered list = tabs + query (and source switching)
   const filtered = useMemo(() => {
     let base = active === "location" ? nearbyPosts : posts;
-
     if (active === "video") base = base.filter((p) => p.hasVideo);
-
     if (active === "date" && selectedDate) {
       base = base.filter((p) => {
         const d = dateOnly(p.rawDate);
         return d && d.getTime() === selectedDate.getTime();
       });
     }
-
     if (query.trim().length) {
       const tokens = parseQuery(query);
       const raw = active === "location" ? rawNearby : rawPosts;
-      const okIds = new Set(
-        raw.filter((p) => matchesTokens(p, tokens)).map((p) => String(p.ID))
-      );
+      const okIds = new Set(raw.filter((p) => matchesTokens(p, tokens)).map((p) => String(p.ID)));
       base = base.filter((p) => okIds.has(p.id));
     }
-
     return base;
   }, [posts, nearbyPosts, active, query, rawPosts, rawNearby, selectedDate]);
 
@@ -1306,108 +1512,139 @@ const onEditPost = (post: PostCardModel) => {
     navigation.navigate("PostDetailScreen", { postId: id, token });
   };
 
-  /* ---------- Likes ---------- */
   const [likingIds, setLikingIds] = useState<Set<string>>(new Set());
-  const toggleLike = async (postId: string, item: PostCardModel) => {
-    if (likingIds.has(postId)) return;
+// ⬆️ top-level in component state
 
-    const source = active === "location" ? nearbyPosts : posts;
-    const setSource = active === "location" ? setNearbyPosts : setPosts;
-    const curIdx = source.findIndex((p) => p.id === postId);
-    if (curIdx === -1) return;
+// ⬇️ replace your toggleCommentLike with this guarded version
+const toggleLike = async (postId: string, item: PostCardModel) => {
+  if (likingIds.has(postId)) return;
 
-    const current = source[curIdx];
-    const optimisticLiked = !current.liked;
-    const optimisticLikes = current.likes + (optimisticLiked ? 1 : -1);
+  const source = active === "location" ? nearbyPosts : posts;
+  const setSource = active === "location" ? setNearbyPosts : setPosts;
+  const curIdx = source.findIndex((p) => p.id === postId);
+  if (curIdx === -1) return;
 
-    const next = [...source];
-    next[curIdx] = {
-      ...current,
-      liked: optimisticLiked,
-      likes: Math.max(0, optimisticLikes),
-    };
-    setSource(next);
+  const current = source[curIdx];
+  const optimisticLiked = !current.liked;
+  const optimisticLikes = current.likes + (optimisticLiked ? 1 : -1);
 
-    const inFlight = new Set(likingIds);
-    inFlight.add(postId);
-    setLikingIds(inFlight);
-
-    try {
-      if (optimisticLiked) {
-        await likePostApi(postId, token);
-        const title = "New like";
-        const message = `${userprofile?.username || "Someone"} liked your post`;
-        {userprofile?.Id!==item?.authorId &&
-        SendNotification(message, title, item?.authorId, 1, Number(postId));
-        }
-      } else {
-        await unlikePostApi(postId, token);
-      }
-    } catch {
-      const rollback = [...next];
-      rollback[curIdx] = { ...current };
-      setSource(rollback);
-      Alert.alert("Oops", "Could not update like. Please try again.");
-    } finally {
-      const s = new Set(inFlight);
-      s.delete(postId);
-      setLikingIds(s);
-    }
+  const next = [...source];
+  next[curIdx] = {
+    ...current,
+    liked: optimisticLiked,
+    likes: Math.max(0, optimisticLikes),
   };
+  setSource(next);
 
-  /* ---------- Comments ---------- */
+  const inFlight = new Set(likingIds);
+  inFlight.add(postId);
+  setLikingIds(inFlight);
+
+  try {
+    if (optimisticLiked) {
+      await likePostApi(postId, token);
+      const title = "New like";
+      const message = `${userprofile?.username || "Someone"} liked your post`;
+      {userprofile?.Id!==item?.authorId &&
+      SendNotification(message, title, item?.authorId, 1, Number(postId));
+      }
+    } else {
+      await unlikePostApi(postId, token);
+    }
+  } catch {
+    const rollback = [...next];
+    rollback[curIdx] = { ...current };
+    setSource(rollback);
+    Alert.alert("Oops", "Could not update like. Please try again.");
+  } finally {
+    const s = new Set(inFlight);
+    s.delete(postId);
+    setLikingIds(s);
+  }
+};
+
+
   const [commentingIds, setCommentingIds] = useState<Set<string>>(new Set());
-  const setDraftFor = (postId: string, val: string) =>
-    setCommentDrafts((prev) => ({ ...prev, [postId]: val }));
-  type TaggedUser = { id: string; username: string };
+  const setDraftFor = (postId: string, val: string) => setCommentDrafts((prev) => ({ ...prev, [postId]: val }));
   const meId = String(userprofile?.ID ?? "");
-
-  // add parentId parameter
+  useFocusEffect(
+    React.useCallback(() => {
+      // 👇 make sure list jumps to top whenever Home gets focus
+      setTimeout(() => {
+        feedRef.current?.scrollToOffset({ offset: 0, animated: false });
+      }, 0);
+  
+      // When Home tab gains focus, reload feed & comments
+      GetUserHome();
+      GetAllPost();
+      fetchNotifications();
+  
+      setCommentsByPost({});
+      posts.forEach((p) => fetchPostComments(p.id));
+  
+      return undefined;
+    }, [token])
+  );
+  
   const addComment = async (
     postId: string,
     item: PostCardModel,
     tagged: TaggedUser[] = [],
-    parentId?: string
+    parentId?: string,
+    textOverride?: string
   ): Promise<boolean> => {
     Keyboard.dismiss();
     const title = parentId ? "New reply" : "New Comment";
     const message = `${userprofile?.username || "Someone"} ${parentId ? "replied to a comment on" : "commented on"} your post`;
-  
-    const text = (commentDrafts[postId] || "").trim();
+    const text = (textOverride ?? commentDrafts[postId] ?? "").trim();
     if (!text) return false;
     if (commentingIds.has(postId)) return false;
-  
     const source = active === "location" ? nearbyPosts : posts;
     const setSource = active === "location" ? setNearbyPosts : setPosts;
-  
     const idx = source.findIndex((p) => p.id === postId);
-    if (idx === -1) return;
-  
+    if (idx === -1) return false;
     const current = source[idx];
     const next = [...source];
     next[idx] = { ...current, comments: current.comments + 1 };
     setSource(next);
-  
     const inf = new Set(commentingIds);
     inf.add(postId);
     setCommentingIds(inf);
-  
     try {
       const safe = encodeToHtmlEntities(text);
-      console.log("🗨️ Sending comment:", text, "parentId:", parentId);
       await commentPostApi(postId, safe, token, userprofile?.ID, parentId);
       await loadCommentsForPost(postId);
-   
   
-      // notify post author (skip self)
+      // 🔔 1) Notify post author (existing behavior)
       if (item.authorId && String(item.authorId) !== String(userprofile?.ID)) {
         SendNotification(message, title, item.authorId, 1, Number(postId));
       }
   
-      // notify tagged users
+      // 🔔 2) If this is a reply, also notify the comment author
+      if (parentId) {
+        const entry = commentsByPost[postId];
+        const parent = entry?.list.find((c) => String(c.ID) === String(parentId));
+        const replyTargetId = parent?.user_id;
+  
+        if (
+          replyTargetId &&
+          String(replyTargetId) !== String(userprofile?.ID) &&          // not self
+          String(replyTargetId) !== String(item.authorId || "")         // not duplicate of post author
+        ) {
+          const replyTitle = "New reply";
+          const replyMsg = `${userprofile?.username || userprofile?.display_name || "Someone"} replied to your comment`;
+          SendNotification(replyMsg, replyTitle, String(replyTargetId), 1, Number(postId));
+        }
+      }
+  
+      // 🔔 3) Mention notifications (already there)
+      if (item.authorId && String(item.authorId) !== String(userprofile?.ID)) {
+        // keep as-is or remove if it feels double
+      }
+  
       for (const t of tagged) {
         const msg = `${userprofile?.username || "Someone"} mentioned you in a comment`;
-        SendNotification(msg, "You were mentioned", t.id, 2, Number(postId));
+        SendNotification(msg, "You were mentioned", t.id, 1, Number(postId));
       }
   
       setCommentDrafts((p) => ({ ...p, [postId]: "" }));
@@ -1423,127 +1660,22 @@ const onEditPost = (post: PostCardModel) => {
       s.delete(postId);
       setCommentingIds(s);
     }
-    
   };
-  
-  // const addComment = async (
-  //   postId: string,
-  //   item: PostCardModel,
-  //   tagged: TaggedUser[] = []
-  // ) => {
-  //   Keyboard.dismiss();
-  //   const title = "New Comment";
-  //   const message = `${userprofile?.username || "Someone"} commented on your post`;
-  
-  //   const text = (commentDrafts[postId] || "").trim();
-  //   if (!text) return;
-  //   if (commentingIds.has(postId)) return;
-  
-  //   const source = active === "location" ? nearbyPosts : posts;
-  //   const setSource = active === "location" ? setNearbyPosts : setPosts;
-  
-  //   const idx = source.findIndex((p) => p.id === postId);
-  //   if (idx === -1) return;
-  
-  //   const current = source[idx];
-  //   const next = [...source];
-  //   next[idx] = { ...current, comments: current.comments + 1 };
-  //   setSource(next);
-  
-  //   const inf = new Set(commentingIds);
-  //   inf.add(postId);
-  //   setCommentingIds(inf);
-  
-  //   try {
-  //     const safe = encodeToHtmlEntities(text); 
-  //     await commentPostApi(postId, text, token);
-  //     await GetAllPost();
-  //     SendNotification(message, title, item?.authorId, 1, Number(postId));
-  
-  //     // 🔔 Notify all tagged users
-  //     for (const t of tagged) {
-  //       const msg = `${userprofile?.username || "Someone"} mentioned you in a comment`;
-  //       SendNotification(msg, "You were mentioned", t.id, 2, Number(postId));
-  //     }
-  
-  //     setCommentDrafts((p) => ({ ...p, [postId]: "" }));
-  //   } catch {
-  //     const rb = [...next];
-  //     rb[idx] = { ...current };
-  //     setSource(rb);
-  //     Alert.alert("Oops", "Could not post comment. Please try again.");
-  //   } finally {
-  //     const s = new Set(inf);
-  //     s.delete(postId);
-  //     setCommentingIds(s);
-  //   }
-  // };
-  
-  // const addComment = async (postId: string, item: PostCardModel) => {
-  //   Keyboard.dismiss();
-  //   const title = "New Comment";
-  //   const message = `${userprofile?.username || "Someone"} commented on your post`;
 
-  //   const text = (commentDrafts[postId] || "").trim();
-  //   if (!text) return;
-
-  //   if (commentingIds.has(postId)) return;
-
-  //   const source = active === "location" ? nearbyPosts : posts;
-  //   const setSource = active === "location" ? setNearbyPosts : setPosts;
-
-  //   const idx = source.findIndex((p) => p.id === postId);
-  //   if (idx === -1) return;
-
-  //   const current = source[idx];
-  //   const next = [...source];
-  //   next[idx] = { ...current, comments: current.comments + 1 };
-  //   setSource(next);
-
-  //   const inf = new Set(commentingIds);
-  //   inf.add(postId);
-  //   setCommentingIds(inf);
-
-  //   try {
-  //     await commentPostApi(postId, text, token);
-  //     await GetAllPost();
-  //     SendNotification(message, title, item?.authorId, 1, Number(postId));
-  //     setCommentDrafts((prev) => ({ ...prev, [postId]: "" }));
-  //   } catch {
-  //     const rb = [...next];
-  //     rb[idx] = { ...current };
-  //     setSource(rb);
-  //     Alert.alert("Oops", "Could not post comment. Please try again.");
-  //   } finally {
-  //     const s = new Set(inf);
-  //     s.delete(postId);
-  //     setCommentingIds(s);
-  //   }
-  // };
-
-  /* ---------- Friends ---------- */
   const [friendBusy, setFriendBusy] = useState<Set<string>>(new Set());
   const toggleFriendship = async (authorId?: string, confirmed = false) => {
     if (!authorId) return;
     if (String(authorId) === String(userprofile?.ID)) return;
     if (friendBusy.has(authorId)) return;
-
     const updateLists = (target: boolean) => {
-      setPosts((prev) =>
-        prev.map((p) => (p.authorId === authorId ? { ...p, areFriends: target } : p))
-      );
-      setNearbyPosts((prev) =>
-        prev.map((p) => (p.authorId === authorId ? { ...p, areFriends: target } : p))
-      );
+      setPosts((prev) => prev.map((p) => (p.authorId === authorId ? { ...p, areFriends: target } : p)));
+      setNearbyPosts((prev) => prev.map((p) => (p.authorId === authorId ? { ...p, areFriends: target } : p)));
     };
-
     const anyPost =
-      posts.find((p) => p.authorId === authorId) ||
-      nearbyPosts.find((p) => p.authorId === authorId);
+      posts.find((p) => p.authorId === authorId) || nearbyPosts.find((p) => p.authorId === authorId);
     const authorName = anyPost?.author ?? "this user";
     const isFriendNow = anyPost?.areFriends ?? false;
     const target = !isFriendNow;
-
     if (!target && !confirmed) {
       Alert.alert("Unfriend?", `Remove ${authorName} from your friends?`, [
         { text: "Cancel", style: "cancel" },
@@ -1551,13 +1683,10 @@ const onEditPost = (post: PostCardModel) => {
       ]);
       return;
     }
-
     updateLists(target);
-
     const busy = new Set(friendBusy);
     busy.add(authorId);
     setFriendBusy(busy);
-
     try {
       const payload = JSON.stringify({ friend_id: authorId });
       if (target) await add_friend(payload, token);
@@ -1572,39 +1701,25 @@ const onEditPost = (post: PostCardModel) => {
     }
   };
 
-  /* ---------- Follow ---------- */
   const [followBusy, setFollowBusy] = useState<Set<string>>(new Set());
   const applyFollowState = (authorId: string, following: boolean) => {
-    setPosts((prev) =>
-      prev.map((p) => (p.authorId === authorId ? { ...p, following } : p))
-    );
-    setNearbyPosts((prev) =>
-      prev.map((p) => (p.authorId === authorId ? { ...p, following } : p))
-    );
+    setPosts((prev) => prev.map((p) => (p.authorId === authorId ? { ...p, following } : p)));
+    setNearbyPosts((prev) => prev.map((p) => (p.authorId === authorId ? { ...p, following } : p)));
   };
   const toggleSave = async (postId: string) => {
     if (savingIds.has(postId)) return;
-  
-    // choose the current source list based on the active tab
     const source = active === "location" ? nearbyPosts : posts;
     const setSource = active === "location" ? setNearbyPosts : setPosts;
-  
     const idx = source.findIndex((p) => p.id === postId);
     if (idx === -1) return;
-  
     const current = source[idx];
     const optimisticSaved = !current.saved;
-  
-    // optimistic UI update
     const next = [...source];
     next[idx] = { ...current, saved: optimisticSaved };
     setSource(next);
-  
-    // mark as in-flight
     const inflight = new Set(savingIds);
     inflight.add(postId);
     setSavingIds(inflight);
-  
     try {
       if (optimisticSaved) {
         await savePostApi(postId, token);
@@ -1612,7 +1727,6 @@ const onEditPost = (post: PostCardModel) => {
         await unsavePostApi(postId, token);
       }
     } catch (e) {
-      // rollback on failure
       const rollback = [...next];
       rollback[idx] = { ...current };
       setSource(rollback);
@@ -1631,25 +1745,15 @@ const onEditPost = (post: PostCardModel) => {
     }
     if (String(authorId) === String(userprofile?.ID)) return;
     if (followBusy.has(authorId)) return;
-
     const anyPost =
       posts.find((p) => p.authorId === authorId) ||
       nearbyPosts.find((p) => p.authorId === authorId);
     const isFollowingNow = !!anyPost?.following;
-
     if (isFollowingNow) {
-      Alert.alert(
-        `Unfollow ${authorName || "this user"}?`,
-        "You will stop seeing their updates.",
-        [
-          { text: "Cancel", style: "cancel" },
-          {
-            text: "Unfollow",
-            style: "destructive",
-            onPress: () => performFollow(authorId, false),
-          },
-        ]
-      );
+      Alert.alert(`Unfollow ${authorName || "this user"}?`, "You will stop seeing their updates.", [
+        { text: "Cancel", style: "cancel" },
+        { text: "Unfollow", style: "destructive", onPress: () => performFollow(authorId, false) },
+      ]);
     } else {
       performFollow(authorId, true);
     }
@@ -1657,13 +1761,15 @@ const onEditPost = (post: PostCardModel) => {
 
   const performFollow = async (authorId: string, follow: boolean) => {
     applyFollowState(authorId, follow);
-
     const busy = new Set(followBusy);
     busy.add(authorId);
     setFollowBusy(busy);
-
     try {
-      if (follow) await followUserApi(authorId, token);
+      if (follow) {await followUserApi(authorId, token);
+      const title = "New follower";
+      const message = `${userprofile?.username || userprofile?.display_name || "Someone"} started following you`;
+      SendNotification(message, title, authorId, 1);
+      }
       else await unfollowUserApi(authorId, token);
     } catch (e) {
       applyFollowState(authorId, !follow);
@@ -1675,10 +1781,8 @@ const onEditPost = (post: PostCardModel) => {
     }
   };
 
-  /* ----------- Video autoplay: track visible cards ----------- */
   const [playMap, setPlayMap] = useState<Record<string, boolean>>({});
   const viewabilityConfig = useRef({ itemVisiblePercentThreshold: 60 }).current;
-
   const onViewableItemsChanged = useRef(
     ({ viewableItems }: { viewableItems: Array<ViewToken> }) => {
       const next: Record<string, boolean> = {};
@@ -1690,54 +1794,46 @@ const onEditPost = (post: PostCardModel) => {
     }
   ).current;
   const [notifCount, setNotifCount] = useState(0);
+
   useFocusEffect(
     React.useCallback(() => {
-      // TODO: call your notifications API here and set count
-      // setNotifCount(server.unreadCount);
-      setNotifCount((c) => c); // keep as-is for now
+      setNotifCount((c) => c);
     }, [])
   );
+
   return (
     <View style={{ flex: 1, backgroundColor: COLORS.bg }}>
       <StatusBar barStyle="light-content" backgroundColor={COLORS.surface} translucent={false} />
-
       <SafeAreaView style={{ backgroundColor: COLORS.surface }} edges={["top"]}>
-        {/* Top bar */}
         <View style={styles.topbar}>
           <View style={styles.brandRow}>
             <Image source={require("../../assets/Logo.png")} resizeMode="contain" style={styles.logo} />
           </View>
-
           <View style={styles.topActions}>
             <TouchableOpacity style={styles.iconBtn} onPress={openSearch}>
               <Ionicons name="search" size={20} color={COLORS.icon} />
             </TouchableOpacity>
             <TouchableOpacity style={[styles.iconBtn, { position: "relative" }]} onPress={openChat}>
-  <Ionicons name="notifications-outline" size={22} color={COLORS.icon} />
-  {notifCount > 0 && (
-    <View style={styles.badge}>
-      <Text style={styles.badgeTxt}>{notifCount > 99 ? "99+" : String(notifCount)}</Text>
-    </View>
-   )} 
-</TouchableOpacity>
-
-
-
+              <Ionicons name="notifications-outline" size={22} color={COLORS.icon} />
+              {notifCount > 0 && (
+                <View style={styles.badge}>
+                  <Text style={styles.badgeTxt}>{notifCount > 99 ? "99+" : String(notifCount)}</Text>
+                </View>
+              )}
+            </TouchableOpacity>
             <TouchableOpacity
               style={styles.avatarWrap}
               onPress={() => navigation.navigate("ProfileScreen")}
             >
-               <Avatar
-    uri={userprofile?.meta?.profile_image}
-    name={userprofile?.display_name || userprofile?.username}
-    size={20}
-
-  />
+              <Avatar
+                uri={userprofile?.meta?.profile_image}
+                name={userprofile?.display_name || userprofile?.username}
+                size={20}
+              />
             </TouchableOpacity>
           </View>
         </View>
 
-        {/* Slide-down Search Drawer */}
         <Animated.View style={[styles.searchDrawer, { height: searchHeight, opacity: searchOpacity }]}>
           {searchOpen && (
             <View style={styles.searchRow}>
@@ -1755,13 +1851,14 @@ const onEditPost = (post: PostCardModel) => {
                 />
               </View>
               <TouchableOpacity onPress={() => closeSearch(false)} style={styles.cancelBtn}>
-                <Text style={styles.cancelTxt} allowFontScaling={false}>Cancel</Text>
+                <Text style={styles.cancelTxt} allowFontScaling={false}>
+                  Cancel
+                </Text>
               </TouchableOpacity>
             </View>
           )}
         </Animated.View>
 
-        {/* Tabs */}
         <View style={styles.tabsWrap} onLayout={onTabsLayout}>
           <Animated.View
             pointerEvents="none"
@@ -1792,12 +1889,7 @@ const onEditPost = (post: PostCardModel) => {
         </View>
       </SafeAreaView>
 
-      {/* Feed */}
-      <AvoidSoftInputView
-        style={{ flex: 1 }}
-        behavior={Platform.OS === "ios" ? "padding" : "height"}
-        // keyboardVerticalOffset={0}
-      >
+      <AvoidSoftInputView style={{ flex: 1 }} behavior={Platform.OS === "ios" ? "padding" : "height"}>
         <FlatList
           data={filtered}
           ref={feedRef}
@@ -1807,7 +1899,7 @@ const onEditPost = (post: PostCardModel) => {
           refreshing={refreshing}
           onRefresh={() => {
             GetAllPost();
-            posts.forEach((p) => fetchPostComments(p.id));
+            posts.forEach((p) => loadCommentsForPost(p.id));
           }}
           viewabilityConfig={viewabilityConfig}
           onViewableItemsChanged={onViewableItemsChanged}
@@ -1826,26 +1918,24 @@ const onEditPost = (post: PostCardModel) => {
               totalCommentsFromApi={commentsByPost[item.id]?.total ?? item.comments}
               commentsLoading={!!commentsLoading[item.id]}
               ensureComments={() => loadCommentsForPost(item.id)}
-              onSendComment={(tagged, parentId) => addComment(item.id, item, tagged, parentId)}
-            
+              onSendComment={(tagged, parentId, text) => addComment(item.id, item, tagged, parentId, text)}
               commenting={commentingIds.has(item.id)}
               onToggleFriend={() => toggleFriendship(item.authorId)}
               friendBusy={item.authorId ? friendBusy.has(item.authorId) : false}
               onToggleFollow={() => toggleFollow(item.authorId, item.author)}
               followBusy={item.authorId ? followBusy.has(item.authorId) : false}
-              // isSelf={item.authorId && String(item.authorId) === String(userprofile?.ID)}
               onToggleSave={() => toggleSave(item.id)}
               saving={savingIds.has(item.id)}
               shouldPlay={!!playMap[item.id] && isFocused}
               isSelf={item.authorId && String(item.authorId) === String(userprofile?.ID)}
-              // onRepost={() => onRepost(item)}
               onEdit={() => onEditPost(item)}
               onDelete={() => onDeletePost(item)}
               onRepost={() => onRepost(item)}
               onUnrepost={() => onUnrepost(item)}
               flatListNode={feedNodeRef.current}
               onNeedScroll={scrollListToY}
-            
+              onToggleCommentLike={(commentId) => toggleCommentLike(item.id, commentId)}
+              isCommentLikeBusy={(commentId) => commentLikeBusy.has(`${item.id}:${commentId}`)}         
             />
           )}
           contentContainerStyle={{ paddingBottom: 24 }}
@@ -1853,9 +1943,23 @@ const onEditPost = (post: PostCardModel) => {
           showsVerticalScrollIndicator={false}
           ListEmptyComponent={
             <View style={{ alignItems: "center", marginTop: 48, paddingHorizontal: 16 }}>
-              {active === "location" ? (
+              {loadingPosts || refreshing ? (
+                <View style={{ alignItems: "center", gap: 10 }}>
+                  <ActivityIndicator size="large" color={COLORS.accent} />
+                  <Text style={{ color: COLORS.sub }}>Loading …</Text>
+                </View>
+              ) : !hasLoadedOnce ? (
+                // Safety: also show loader if we somehow haven't finished the first load
+                <View style={{ alignItems: "center", gap: 10 }}>
+                  <ActivityIndicator size="small" color={COLORS.accent} />
+                  <Text style={{ color: COLORS.sub }}>Loading …</Text>
+                </View>
+              ) : active === "location" ? (
                 nearbyLoading ? (
-                  <Text style={{ color: COLORS.sub }}>Finding nearby posts…</Text>
+                  <View style={{ alignItems: "center", gap: 10 }}>
+                    <ActivityIndicator size="small" color={COLORS.accent} />
+                    <Text style={{ color: COLORS.sub }}>Finding nearby posts…</Text>
+                  </View>
                 ) : nearbyErr ? (
                   <Text style={{ color: COLORS.sub }}>{nearbyErr}</Text>
                 ) : (
@@ -1882,29 +1986,32 @@ const onEditPost = (post: PostCardModel) => {
           onCancel={() => setDatePickerVisible(false)}
         />
       </AvoidSoftInputView>
-      <View style={{ alignItems: 'center', marginTop: 10 }}>
-        <BannerAd
-          unitId={bannerAdId}
-          size={BannerAdSize.ADAPTIVE_BANNER}
-          onAdLoaded={() => console.log('Banner loaded')}
-          onAdFailedToLoad={(error) => console.log('Banner failed:', error)}
-        />
-      </View>
+      {showBanner && (
+  <BannerAd
+    unitId={bannerAdId}
+    size={BannerAdSize.ADAPTIVE_BANNER}
+  />
+)}
+
+<TouchableOpacity onPress={() => setShowBanner(false)}>
+<TText style={{color:"white",marginLeft:10}}>Hide Ads</TText>
+</TouchableOpacity>
+
+
+
+
     </View>
   );
 }
-// turn u{1F60E} or &#x1F60E; or &#128526; into real emoji
+
 const decodeCurlyUnicode = (s: string) =>
   s.replace(/u\{([0-9a-fA-F]+)\}/g, (_, hex) => String.fromCodePoint(parseInt(hex, 16)));
 
 const decodeHtmlEntities = (s: string) =>
   s
-    // hex: &#x1F60E;
     .replace(/&#x([0-9a-fA-F]+);/g, (_, hex) => String.fromCodePoint(parseInt(hex, 16)))
-    // dec: &#128526;
     .replace(/&#(\d+);/g, (_, dec) => String.fromCodePoint(parseInt(dec, 10)));
 
-// very light colon-shortcode map (add more if needed or swap for a library)
 const COLON_EMOJI: Record<string, string> = {
   ":thumbsup:": "👍",
   ":sunglasses:": "😎",
@@ -1912,20 +2019,20 @@ const COLON_EMOJI: Record<string, string> = {
   ":fire:": "🔥",
   ":clap:": "👏",
 };
-// Encode everything outside plain ASCII as HTML entities: 😎👍 → &#x1F60E;&#x1F44D;
-export const encodeToHtmlEntities = (s: string) =>
-  Array.from(s).map(ch => {
-    const cp = ch.codePointAt(0)!;
-    return cp > 0x7F ? `&#x${cp.toString(16).toUpperCase()};` : ch;
-  }).join("");
 
-const decodeColonShortcodes = (s: string) =>
-  s.replace(/:[a-z0-9_+\-]+:/gi, m => COLON_EMOJI[m.toLowerCase()] ?? m);
+export const encodeToHtmlEntities = (s: string) =>
+  Array.from(s)
+    .map((ch) => {
+      const cp = ch.codePointAt(0)!;
+      return cp > 0x7f ? `&#x${cp.toString(16).toUpperCase()};` : ch;
+    })
+    .join("");
+
+const decodeColonShortcodes = (s: string) => s.replace(/:[a-z0-9_+\-]+:/gi, (m) => COLON_EMOJI[m.toLowerCase()] ?? m);
 
 export const normalizeEmoji = (s?: string) =>
   decodeColonShortcodes(decodeHtmlEntities(decodeCurlyUnicode(String(s ?? ""))));
 
-// Clickable @mention renderer for comment text
 function RenderMentionsClickable({
   text,
   onPressUsername,
@@ -1938,7 +2045,6 @@ function RenderMentionsClickable({
   normalStyle: any;
 }) {
   const parts = text.split(/(\B@[a-zA-Z0-9._-]+)/g);
-
   return (
     <Text>
       {parts.map((part, idx) => {
@@ -1946,12 +2052,7 @@ function RenderMentionsClickable({
         if (m) {
           const username = m[1];
           return (
-            <Text
-              key={idx}
-              style={mentionStyle}
-              suppressHighlighting
-              onPress={() => onPressUsername(username)}
-            >
+            <Text key={idx} style={mentionStyle} suppressHighlighting onPress={() => onPressUsername(username)}>
               @{username}
             </Text>
           );
@@ -1966,11 +2067,7 @@ function RenderMentionsClickable({
   );
 }
 
-// Simple highlighter: splits text and wraps @mentions
-const renderWithMentions = (
-  text: string,
-  stylesObj: { mention: any; normal: any }
-) => {
+const renderWithMentions = (text: string, stylesObj: { mention: any; normal: any }) => {
   const parts = text.split(/(\B@[a-zA-Z0-9._-]+)/g);
   return parts.map((part, idx) => {
     if (/^\B@[a-zA-Z0-9._-]+$/.test(part)) {
@@ -1988,7 +2085,6 @@ const renderWithMentions = (
   });
 };
 
-/* --------------------------- Card --------------------------- */
 function PostCard({
   post,
   onPress,
@@ -2014,8 +2110,9 @@ function PostCard({
   commentsLoading,
   ensureComments,
   flatListNode,
-  onNeedScroll
-
+  onNeedScroll,
+  onToggleCommentLike,   
+  isCommentLikeBusy
 }: {
   post: PostCardModel;
   onPress: () => void;
@@ -2023,8 +2120,7 @@ function PostCard({
   liking?: boolean;
   commentDraft: string;
   onChangeDraft: (t: string) => void;
-  onSendComment: (tagged: TaggedUser[], parentId?: string) => Promise<boolean>;
-
+  onSendComment: (tagged: TaggedUser[], parentId?: string, text?: string) => Promise<boolean>;
   commenting?: boolean;
   onToggleFriend: () => void;
   onToggleFollow: () => void;
@@ -2043,39 +2139,37 @@ function PostCard({
   ensureComments: () => void;
   flatListNode: number | null;
   onNeedScroll: (absY: number) => void;
+  onToggleCommentLike: (commentId: string) => void;
+  isCommentLikeBusy?: (commentId: string) => boolean; 
+  
 }) {
+  const [ratioMap, setRatioMap] = useState<Record<number, number>>({}); // index -> ratio (w/h)
+const displayMode = "contain"; // or user setting: "contain" | "cover"
+
   const nav = useNavigation<any>();
   const cardRef = useRef<View>(null);
   const inputWrapRef = useRef<View>(null);
-// inside PostCard
-// const meId = useSelector(
-//   (s: any) => (s.authReducer?.userprofile?.ID ? String(s.authReducer.userprofile.ID) : "")
-// );
-
-// Who’s shown as the primary reposter in the banner
-const primaryName =
-  post.repostedById && post.repostedById === meId ? "You" : (post.repostedByName || "Someone");
-
-// How many *other* people (besides the primary) also reposted
-const others = Math.max(0, (post.repostCount || 0) - 1);
-
-// Final banner text
-const bannerText =
-  others > 0
-    ? `${primaryName} and ${others} other${others > 1 ? "s" : ""} reposted`
-    : `${primaryName} reposted`;
-
+  // const primaryName =
+  //   post.repostedById && post.repostedById === useSelector((s: any) => (s.authReducer?.userprofile?.ID ? String(s.authReducer.userprofile.ID) : "")) ? "You" : post.repostedByName || "Someone";
+  // ✅ hooks must be unconditional and at top level
+  const myId = useSelector(
+    (s: any) => (s.authReducer?.userprofile?.ID ? String(s.authReducer.userprofile.ID) : "")
+  );
+ 
+  const primaryName =
+    post.repostedById && post.repostedById === myId
+      ? "You"
+      : post.repostedByName || "Someone";
+  const others = Math.max(0, (post.repostCount || 0) - 1);
+  const bannerText = others > 0 ? `${primaryName} and ${others} other${others > 1 ? "s" : ""} reposted` : `${primaryName} reposted`;
   const scrollInputIntoView = useCallback(() => {
-    // Wait a bit so the keyboard can begin its animation
     setTimeout(() => {
       const listNode = flatListNode;
       if (!listNode) return;
-
-      // Measure the input container relative to the FlatList
       inputWrapRef.current?.measureLayout(
         listNode,
-        (x, y /* w, h */) => {
-        onNeedScroll(y);
+        (x, y) => {
+          onNeedScroll(y);
         },
         () => {}
       );
@@ -2087,82 +2181,75 @@ const bannerText =
   const [menuOpen, setMenuOpen] = useState(false);
   const toggleMenu = () => setMenuOpen((s) => !s);
   const closeMenu = () => setMenuOpen(false);
-  // per-card mute state
   const userprofile = useSelector((state: any) => state.authReducer.userprofile);
   const [muted, setMuted] = useState(true);
-  const handleSend = async () => {
+  const token = useSelector((s: any) => s.authReducer.token);
+  const meId = useSelector((s: any) => (s.authReducer?.userprofile?.ID ? String(s.authReducer.userprofile.ID) : undefined));
+  const [replyTo, setReplyTo] = useState<ApiComment | null>(null);
+  const [descExpanded, setDescExpanded] = useState(false);
+  const onReportPost = (postId) => {
+    Alert.alert(
+      "Report Post",
+      "Tell us why you are reporting this post:",
+      [
+        { text: "Cancel", style: "cancel" },
   
-    const ok = await onSendComment(tagged, replyTo ? String(replyTo.ID) : undefined);
-    if (ok) {
-      // ✅ clear reply state and input
-      setReplyTo(null);
-      setTagged([]);
-      setMentionOpen(false);
-      onChangeDraft("");
-      // setShowBox(false); // optional: close the box
+        { text: "Nudity", onPress: () => sendReport(postId, "Nudity") },
+        { text: "Violence", onPress: () => sendReport(postId, "Violence") },
+        { text: "Hate Speech", onPress: () => sendReport(postId, "Hate Speech") },
+        { text: "Spam", onPress: () => sendReport(postId, "Spam") },
+        { text: "Other", onPress: () => sendReport(postId, "Other") },
+      ]
+    );
+  };
+  
+  const sendReport = async (postId, reason) => {
+    try {
+      // await fetch("https://YOURDOMAIN.com/wp-json/app/v1/report_post", {
+      //   method: "POST",
+      //   headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+      //   body: JSON.stringify({ post_id: postId, reason }),
+      // });
+  
+      Alert.alert("Report Submitted", "Thanks for helping keep the community safe.");
+    } catch (e) {
+      Alert.alert("Error", "Could not submit report.");
     }
   };
   
-  const visibleComments = expanded ? post.commentsList : post.commentsList.slice(0, 2);
-  // const canExpand = post.comments > 2;
-  const token = useSelector((s: any) => s.authReducer.token);
-const meId = useSelector((s: any) =>
-  s.authReducer?.userprofile?.ID ? String(s.authReducer.userprofile.ID) : undefined
-);
-useEffect(() => {
-  // if we don't have comments yet, load once
-  if (!commentsFromApi || commentsFromApi.length === 0) {
-    ensureComments();
-  }
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-}, []);
-const threaded = useMemo(
-  () => threadifyComments(commentsFromApi || []),
-  [commentsFromApi]
-);
-const ROOTS_SHOWN_WHEN_COLLAPSED = 1;
-const canExpand = threaded.length > ROOTS_SHOWN_WHEN_COLLAPSED;
-const rootsToRender = expanded ? threaded : threaded.slice(0, ROOTS_SHOWN_WHEN_COLLAPSED);
+  const onTapReply = (c: ApiComment) => {
+    setReplyTo(c);
+    setShowBox(true);
+    const at = `@${(c.author || "").replace(/\s+/g, "")} `;
+    if (!commentDraft?.startsWith(at)) {
+      onChangeDraft(`${at}${commentDraft || ""}`);
+    }
+    setTimeout(() => {
+      inputRef.current?.focus();
+      scrollInputIntoView();
+    }, 0);
+  };
+  const [mentionOpen, setMentionOpen] = useState(false);
+  const [mentionQuery, setMentionQuery] = useState("");
+  const [mentionList, setMentionList] = useState<UserLite[]>([]);
+  const [mentionLoading, setMentionLoading] = useState(false);
+  const [tagged, setTagged] = useState<TaggedUser[]>([]);
+  const mentionRegex = /(^|\s)@([\w.\-]{0,30})$/i;
+  const debTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const onMentionPress = async (username: string) => {
+    const uid = await resolveUserIdByUsername(username, token);
+   
+ 
+    if (uid) {
+      nav.navigate("ViewProfileScreen", { NTN_User_PkeyID: uid });
+    } else {
+      Alert.alert("Profile not found", `Couldn't open @${username}'s profile.`);
+    }
+  };
+  const [commentModal, setCommentModal] = useState<{ open: boolean; postId?: string }>({ open: false });
+const openComments = (postId: string) => setCommentModal({ open: true, postId });
+const closeComments = () => setCommentModal({ open: false });
 
-
-// const threaded = useMemo(
-//   () => threadifyComments(post.commentsList || []),
-//   [post.commentsList]
-// );
-// inside PostCard
-const [replyTo, setReplyTo] = useState<ApiComment | null>(null);
-
-const onTapReply = (c: ApiComment) => {
-  setReplyTo(c);
-  setShowBox(true);
-  // (optional) prefill with @mention of the author
-  const at = `@${(c.author || "").replace(/\s+/g, "")} `;
-  if (!commentDraft?.startsWith(at)) {
-    onChangeDraft(`${at}${commentDraft || ""}`);
-  }
-  setTimeout(() => {
-    inputRef.current?.focus();
-    scrollInputIntoView();  // 👈 ensure visible on reply
-  }, 0);
-};
-
-// mention state
-const [mentionOpen, setMentionOpen] = useState(false);
-const [mentionQuery, setMentionQuery] = useState("");
-const [mentionList, setMentionList] = useState<UserLite[]>([]);
-const [mentionLoading, setMentionLoading] = useState(false);
-const [tagged, setTagged] = useState<TaggedUser[]>([]);
-const mentionRegex = /(^|\s)@([\w.\-]{0,30})$/i;
-const debTimer = useRef<any>(null);
-const onMentionPress = async (username: string) => {
-  // try to resolve the user id
-  const uid = await resolveUserIdByUsername(username, token);
-  if (uid) {
-    nav.navigate("ViewProfileScreen", { NTN_User_PkeyID: uid });
-  } else {
-    Alert.alert("Profile not found", `Couldn't open @${username}'s profile.`);
-  }
-};
   const runUserSearch = (q: string) => {
     if (debTimer.current) clearTimeout(debTimer.current);
     debTimer.current = setTimeout(async () => {
@@ -2172,7 +2259,14 @@ const onMentionPress = async (username: string) => {
       setMentionLoading(false);
     }, 200);
   };
-  
+  useEffect(() => {
+    return () => {
+      if (debTimer.current) {
+        clearTimeout(debTimer.current);
+        debTimer.current = null;
+      }
+    };
+  }, []);
   const handleDraftChange = (t: string) => {
     onChangeDraft(t);
     const m = t.match(mentionRegex);
@@ -2185,56 +2279,72 @@ const onMentionPress = async (username: string) => {
       setMentionOpen(false);
     }
   };
-  
   const insertMention = (u: UserLite) => {
     const current = commentDraft || "";
     const newText = current.replace(mentionRegex, (all, lead) => `${lead}@${u.username} `);
     onChangeDraft(newText);
-    setTagged((prev) =>
-      prev.some((x) => x.id === u.id) ? prev : [...prev, { id: u.id, username: u.username }]
-    );
+    setTagged((prev) => (prev.some((x) => x.id === u.id) ? prev : [...prev, { id: u.id, username: u.username }]));
     setMentionOpen(false);
     setTimeout(() => inputRef.current?.focus(), 0);
   };
-  
   const onPressCommentIcon = () => {
     setShowBox(true);
     setReplyTo(null);
     setTimeout(() => {
       inputRef.current?.focus();
-      scrollInputIntoView();  // 👈 ensure visible on open
+      scrollInputIntoView();   
     }, 0);
   };
-  
-
-  // Build media list: video first then ALL images; if none, use first image
   const mediaItems = useMemo(() => {
     const items: Array<{ type: "video" | "image"; uri: string }> = [];
-    if (post.hasVideo && post.videoUrl) items.push({ type: "video", uri: post.videoUrl });
-    const imgs = Array.isArray(post.images) && post.images.length > 0 ? post.images : (post.image ? [post.image] : []);
-    items.push(...imgs.map((u) => ({ type: "image", uri: u })));
+  
+    // 1) Videos
+    const videoUrls =
+      (post.videoUrls && post.videoUrls.length > 0
+        ? post.videoUrls
+        : post.videoUrl
+        ? [post.videoUrl]
+        : []) as string[];
+  
+    videoUrls.forEach((u) => {
+      if (u) {
+        items.push({ type: "video", uri: u });
+      }
+    });
+  
+    // 2) Images
+    const imgs =
+      Array.isArray(post.images) && post.images.length > 0
+        ? post.images
+        : post.image
+        ? [post.image]
+        : [];
+  
+    imgs.forEach((u) => {
+      if (u) {
+        items.push({ type: "image", uri: u });
+      }
+    });
+  
     return items;
-  }, [post.hasVideo, post.videoUrl, post.images, post.image]);
+  }, [post.videoUrls, post.videoUrl, post.images, post.image, post.hasVideo]);
+  
+  const totalMediaCount = mediaItems.length;
 
+  
   const [slide, setSlide] = useState(0);
   const [mediaWidth, setMediaWidth] = useState(0);
   const listRef = useRef<FlatList<{ type: "video" | "image"; uri: string }>>(null);
-
   const onScrollMedia = (e: NativeSyntheticEvent<NativeScrollEvent>) => {
     const x = e.nativeEvent.contentOffset.x || 0;
     const w = e.nativeEvent.layoutMeasurement.width || 1;
     const idx = Math.round(x / w);
     if (idx !== slide) setSlide(idx);
   };
-
   const isVideoActive = mediaItems[slide]?.type === "video";
-
-  // Auto-mute when leaving the video slide
   useEffect(() => {
     if (!isVideoActive && !muted) setMuted(true);
   }, [isVideoActive]);
-
-  // ---------- Share handlers (INSIDE PostCard) ----------
   const shareCurrent = async () => {
     try {
       const item = mediaItems[slide];
@@ -2242,30 +2352,12 @@ const onMentionPress = async (username: string) => {
       const url = item.uri;
       const title = post.title || "Shared media";
       const message = `${title}\n${url}`;
-
       if (Platform.OS === "android") await Share.share({ title, message });
       else await Share.share({ title, url, message });
     } catch {
       Alert.alert("Share failed", "Unable to share this media right now.");
     }
   };
-
-  const shareAlbum = async () => {
-    try {
-      const allUrls = mediaItems.map((m) => m.uri);
-      if (!allUrls.length) return;
-
-      const title = post.title || "Shared album";
-      const message = `${title}\n${allUrls.join("\n")}`;
-
-      if (Platform.OS === "android") await Share.share({ title, message });
-      else await Share.share({ title, url: allUrls[0], message });
-    } catch {
-      Alert.alert("Share failed", "Unable to share the album right now.");
-    }
-  };
-  // ------------------------------------------------------
-
   const heartName = post.liked ? "heart" : "heart-outline";
   const heartColor = post.liked ? COLORS.accent : COLORS.icon;
   useEffect(() => {
@@ -2276,42 +2368,47 @@ const onMentionPress = async (username: string) => {
     }
   }, [commentDraft, replyTo]);
   const [expandedChildren, setExpandedChildren] = useState<Record<string, boolean>>({});
-const toggleChildren = (rootId: string) =>
-  setExpandedChildren(s => ({ ...s, [rootId]: !s[rootId] }));
-  return (
-    <View style={styles.card} >
-      {/* Header */}
-      {post.isRepostCard ? (
-  <TouchableOpacity
-    onPress={() =>
-      post.repostedById && nav.navigate("ViewProfileScreen", { NTN_User_PkeyID: post.repostedById })
+  const toggleChildren = (rootId: string) => setExpandedChildren((s) => ({ ...s, [rootId]: !s[rootId] }));
+  useEffect(() => {
+    if (!commentsFromApi || commentsFromApi.length === 0) {
+      ensureComments();
     }
-    style={styles.repostBanner}
-    activeOpacity={0.8}
-  >
-    <Ionicons name="repeat-outline" size={14} color={COLORS.sub} />
-    <Text style={styles.repostBannerText}>{bannerText}</Text>
-  </TouchableOpacity>
-) : null}
-
+  }, []);
+  const threaded = useMemo(() => threadifyComments(commentsFromApi || []), [commentsFromApi]);
+  const ROOTS_SHOWN_WHEN_COLLAPSED = 1;
+  const canExpand = threaded.length > ROOTS_SHOWN_WHEN_COLLAPSED;
+  const rootsToRender = expanded ? threaded : threaded.slice(0, ROOTS_SHOWN_WHEN_COLLAPSED);
+  const handleSend = async () => {
+    const ok = await onSendComment(tagged, replyTo ? String(replyTo.ID) : undefined);
+    if (ok) {
+      setReplyTo(null);
+      setTagged([]);
+      setMentionOpen(false);
+      onChangeDraft("");
+    }
+  };
+  return (
+    <View style={styles.card}>
+      {post.isRepostCard ? (
+        <TouchableOpacity
+          onPress={() =>
+            post.repostedById && nav.navigate("ViewProfileScreen", { NTN_User_PkeyID: post.repostedById })
+          }
+          style={styles.repostBanner}
+          activeOpacity={0.8}
+        >
+          <Ionicons name="repeat-outline" size={14} color={COLORS.sub} />
+          <Text style={styles.repostBannerText}>{bannerText}</Text>
+        </TouchableOpacity>
+      ) : null}
 
       <View style={styles.rowBetween}>
         <View style={styles.row}>
-          <TouchableOpacity
-            onPress={() =>
-              nav.navigate("ViewProfileScreen", { NTN_User_PkeyID: post.authorId })
-            }
-          >
-              <Avatar uri={post.avatar} name={post.author} size={36} />
-            {/* <Image source={{ uri: post.avatar }} style={styles.postAvatar} /> */}
+          <TouchableOpacity onPress={() => nav.navigate("ViewProfileScreen", { NTN_User_PkeyID: post.authorId })}>
+            <Avatar uri={post.avatar} name={post.author} size={36} />
           </TouchableOpacity>
-
           <View>
-            <TouchableOpacity
-              onPress={() =>
-                nav.navigate("ViewProfileScreen", { NTN_User_PkeyID: post.authorId })
-              }
-            >
+            <TouchableOpacity onPress={() => nav.navigate("ViewProfileScreen", { NTN_User_PkeyID: post.authorId })}>
               <Text style={styles.author}>{post.author}</Text>
             </TouchableOpacity>
             <View style={{ flexDirection: "row", alignItems: "center" }}>
@@ -2324,125 +2421,105 @@ const toggleChildren = (rootId: string) =>
             </View>
           </View>
         </View>
-        <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
-    {/* Keep the Follow pill ONLY for non-self (optional) */}
-    {!isSelf ? (
-      <TouchableOpacity
-        style={[
-          styles.pillBtn,
-          post.following ? styles.pillActive : null,
-          followBusy ? { opacity: 0.6 } : null,
-        ]}
-        onPress={onToggleFollow}
-        disabled={!!followBusy}
-        hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
-      >
-        <Ionicons
-          name={post.following ? "checkmark-circle-outline" : "add-circle-outline"}
-          size={16}
-          color={post.following ? "#fff" : COLORS.icon}
+    <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
+  {/* show follow button ONLY if:
+      - not my own post
+      - and I'm NOT following */}
+{!isSelf && !post.following &&  (
+  <TouchableOpacity
+    style={[
+      styles.pillBtn,
+      post.following && styles.pillActive,   // highlight when following
+      // followBusy ? { opacity: 0.5 } : null, // dim while API is busy
+    ]}
+    onPress={onToggleFollow}
+    disabled={!!followBusy}
+    hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+  >
+    <Ionicons
+      name={post.following ? "checkmark-circle-outline" : "add-circle-outline"}
+      size={16}
+      color={post.following ? "#fff" : COLORS.icon}
+    />
+
+    <TText
+      style={[
+        styles.pillTxt,
+        post.following ? { color: "#fff" } : null,
+      ]}
+      allowFontScaling={false}
+    >
+      {post.following ? "Following" : "Follow"}
+    </TText>
+  </TouchableOpacity>
+)}
+
+
+
+  <View style={{ position: "relative" }}>
+    <TouchableOpacity
+      onPress={toggleMenu}
+      hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+      style={{ padding: 6 }}
+    >
+      <Ionicons name="ellipsis-vertical" size={20} color={COLORS.icon} />
+    </TouchableOpacity>
+
+    {menuOpen && (
+      <>
+        <TouchableOpacity
+          onPress={closeMenu}
+          style={styles.menuBackdrop}
+          activeOpacity={1}
         />
-        <TText
-          style={[styles.pillTxt, post.following ? { color: "#fff" } : null]}
-          allowFontScaling={false}
-        >
-          {post.following ? "Following" : "Follow"}
+        <View style={styles.menu}>
+        <View style={styles.menu}>
+  {isSelf ? (
+    <>
+      <TouchableOpacity style={styles.menuItem} onPress={onEdit}>
+        <Ionicons name="create-outline" size={18} color={COLORS.text} />
+        <TText style={styles.menuText}>Edit</TText>
+      </TouchableOpacity>
+
+      <TouchableOpacity style={styles.menuItem} onPress={onDelete}>
+        <Ionicons name="trash-outline" size={18} color={COLORS.accent} />
+        <TText style={[styles.menuText, { color: COLORS.accent }]}>Delete</TText>
+      </TouchableOpacity>
+    </>
+  ) : (
+    <>
+      <TouchableOpacity style={styles.menuItem} onPress={onRepost}>
+        <Ionicons name="repeat-outline" size={18} color={COLORS.text} />
+        <TText style={styles.menuText}>Repost</TText>
+      </TouchableOpacity>
+
+      {/* ⭐ REQUIRED BY APPLE ⭐ */}
+      <TouchableOpacity
+        style={styles.menuItem}
+        onPress={() => onReportPost(post.id)}
+      >
+        <Ionicons name="flag-outline" size={18} color="red" />
+        <TText style={[styles.menuText, { color: "red" }]}>
+          Report Post
         </TText>
       </TouchableOpacity>
-    ) : null}
+    </>
+  )}
+   
+</View>
 
-    {/* 3-dot overflow menu */}
-    <View style={{ position: "relative" }}>
-      <TouchableOpacity
-        onPress={toggleMenu}
-        hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
-        style={{ padding: 6 }}
-      >
-        <Ionicons name="ellipsis-vertical" size={20} color={COLORS.icon} />
-      </TouchableOpacity>
-
-      {menuOpen && (
-        <>
-          {/* click-outside overlay */}
-          <TouchableOpacity
-            onPress={closeMenu}
-            style={styles.menuBackdrop}
-            activeOpacity={1}
-          />
-
-          {/* dropdown */}
-          <View style={styles.menu}>
-            {isSelf ? (
-              <>
-                <TouchableOpacity
-                  style={styles.menuItem}
-                  onPress={() => { closeMenu(); onEdit(); }}
-                >
-                  <Ionicons name="create-outline" size={18} color={COLORS.text} />
-                  <Text style={styles.menuText}>Edit</Text>
-                </TouchableOpacity>
-                <TouchableOpacity
-                  style={[styles.menuItem, { borderTopWidth: 0 }]}
-                  onPress={() => { closeMenu(); onDelete(); }}
-                >
-                  <Ionicons name="trash-outline" size={18} color={COLORS.accent} />
-                  <Text style={[styles.menuText, { color: COLORS.accent }]}>Delete</Text>
-                </TouchableOpacity>
-              </>
-            ) : (
-              <TouchableOpacity
-                style={styles.menuItem}
-                onPress={() => { closeMenu(); onRepost(); }}
-              >
-                <Ionicons name="repeat-outline" size={18} color={COLORS.text} />
-                <Text style={styles.menuText}>Repost</Text>
-              </TouchableOpacity>
-            )}
-          </View>
-        </>
-      )}
-    </View>
+        </View>
+      </>
+    )}
   </View>
+</View>
 
-
-        {/* {!!post.authorId && !isSelf ? (
-          <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
-            {/* Follow pill */}
-            {/* <TouchableOpacity
-              style={[
-                styles.pillBtn,
-                post.following ? styles.pillActive : null,
-                followBusy ? { opacity: 0.6 } : null,
-              ]}
-              onPress={onToggleFollow}
-              disabled={!!followBusy}
-              hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
-            >
-              <Ionicons
-                name={post.following ? "checkmark-circle-outline" : "add-circle-outline"}
-                size={16}
-                color={post.following ? "#fff" : COLORS.icon}
-              />
-              <TText
-                style={[styles.pillTxt, post.following ? { color: "#fff" } : null]}
-                allowFontScaling={false}
-              >
-                {post.following ? "Following" : "Follow"}
-              </TText>
-            </TouchableOpacity>
-          </View>
-        ) : null} */} 
       </View>
+    
 
-      {/* Title + Media (tap opens detail) */}
       <TouchableOpacity onPress={onPress} activeOpacity={0.9}>
-        <TText style={styles.title}>{post.title}</TText>
-
-        {/* Media Carousel */}
-        <View
-          style={styles.media}
-          onLayout={(e) => setMediaWidth(e.nativeEvent.layout.width)}
-        >
+      <TText style={styles.title}>{normalizeEmoji(post.title)}</TText>
+        <View style={styles.media} onLayout={(e) => setMediaWidth(e.nativeEvent.layout.width)}>
           {mediaWidth > 0 && (
             <FlatList
               ref={listRef}
@@ -2454,16 +2531,21 @@ const toggleChildren = (rootId: string) =>
               onScroll={onScrollMedia}
               scrollEventThrottle={16}
               initialNumToRender={1}
- maxToRenderPerBatch={1}
- windowSize={2}
- removeClippedSubviews
+              maxToRenderPerBatch={1}
+              windowSize={2}
+              removeClippedSubviews
               renderItem={({ item }) =>
                 item.type === "video" ? (
                   <View style={{ width: mediaWidth, height: "100%" }}>
                     <Video
-                      source={{ uri: item.uri }}
-                      style={StyleSheet.absoluteFill}
-                      resizeMode="cover"
+                     source={{ uri: item.uri }}
+                     style={{ width: mediaWidth, height: mediaWidth / (ratioMap[slide] || (16/9)) }}
+                     resizeMode={displayMode}
+                     onLoad={(meta) => {
+                       const w = meta?.naturalSize?.width;
+                       const h = meta?.naturalSize?.height;
+                       if (w && h) setRatioMap(m => ({ ...m, [slide]: w / h }));
+                     }}
                       repeat={false}
                       controls={false}
                       paused={!shouldPlay || !isVideoActive}
@@ -2471,36 +2553,26 @@ const toggleChildren = (rootId: string) =>
                       ignoreSilentSwitch="ignore"
                       playWhenInactive={false}
                       playInBackground={false}
-                      poster={post.image}
+                      poster={post.videoThumb || post.image}
+
                       posterResizeMode="cover"
                       bufferConfig={{
-                           minBufferMs: 15000,
-                             maxBufferMs: 30000,
-                             bufferForPlaybackMs: 2500,
-                             bufferForPlaybackAfterRebufferMs: 5000,
-                           }}
-                           progressUpdateInterval={800}
-                           maxBitRate={800000}
-                      onError={(e) => console.log("video error", e?.nativeEvent)}
+                        minBufferMs: 15000,
+                        maxBufferMs: 30000,
+                        bufferForPlaybackMs: 2500,
+                        bufferForPlaybackAfterRebufferMs: 5000,
+                      }}
+                      progressUpdateInterval={800}
+                      maxBitRate={800000}
+                      onError={() => {}}
                       onEnd={() => {}}
                       {...(Platform.OS === "android" ? { useTextureView: false } : {})}
                     />
-                    {/* Small video glyph */}
                     <View style={[styles.multiBadge, { right: 8, top: 8, bottom: undefined }]}>
                       <Ionicons name="videocam-outline" size={14} color="#fff" />
                     </View>
-
-                    {/* Mute / Unmute button */}
-                    <TouchableOpacity
-                      onPress={() => setMuted((m) => !m)}
-                      style={styles.audioBtn}
-                      hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
-                    >
-                      <Ionicons
-                        name={muted ? "volume-mute-outline" : "volume-high-outline"}
-                        size={18}
-                        color="#fff"
-                      />
+                    <TouchableOpacity onPress={() => setMuted((m) => !m)} style={styles.audioBtn} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
+                      <Ionicons name={muted ? "volume-mute-outline" : "volume-high-outline"} size={18} color="#fff" />
                     </TouchableOpacity>
                   </View>
                 ) : (
@@ -2512,29 +2584,26 @@ const toggleChildren = (rootId: string) =>
             />
           )}
 
-          {/* Dots indicator */}
           <View style={styles.dotsWrap}>
             {mediaItems.map((_, i) => (
               <View key={i} style={[styles.dot, i === slide && styles.dotActive]} />
             ))}
           </View>
+          {mediaItems.length > 1 && (
+  <View style={styles.counterBadge}>
+    <Text style={styles.counterTxt}>
+      {slide + 1}/{mediaItems.length}
+    </Text>
+  </View>
+)}
+
         </View>
       </TouchableOpacity>
 
-      {/* Share whole album (outside nav wrapper to avoid accidental navigation) */}
-      <View style={styles.albumShareRow}>
-        {/* <TouchableOpacity onPress={shareAlbum} style={styles.albumShareBtn}>
-          <Ionicons name="share-social-outline" size={16} color="#fff" />
-          <Text style={styles.albumShareTxt}>Share album</Text>
-        </TouchableOpacity> */}
-        {/* Repost badge (bottom-left of media) */}
+      <View style={styles.albumShareRow} />
 
-      </View>
-
-
-      {/* Actions row */}
       <View style={[styles.rowBetween, { marginTop: 10 }]}>
-        <View className="row" style={styles.row}>
+        <View style={styles.row}>
           <TouchableOpacity
             onPress={onToggleLike}
             disabled={liking}
@@ -2546,7 +2615,7 @@ const toggleChildren = (rootId: string) =>
           </TouchableOpacity>
 
           <TouchableOpacity
-            onPress={onPressCommentIcon}
+           onPress={() => openComments(post.id)}
             hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
             style={{ marginLeft: 20, flexDirection: "row", alignItems: "center" }}
           >
@@ -2554,7 +2623,6 @@ const toggleChildren = (rootId: string) =>
             <Text style={styles.meta}>&nbsp;{abbreviate(post.comments)}</Text>
           </TouchableOpacity>
 
-          {/* Share current slide */}
           <TouchableOpacity
             onPress={shareCurrent}
             hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
@@ -2565,12 +2633,12 @@ const toggleChildren = (rootId: string) =>
         </View>
 
         <View style={{ flexDirection: "row", alignItems: "center" }}>
-        {post.repostCount > 0 && (
-  <View style={{right:10,flexDirection:'row'}}>
-    <Ionicons name="repeat-outline" size={16} color="#fff" marginTop={2} />
-    <Text style={styles.multiBadgeTxt}>{post.repostCount}</Text>
-  </View>
-)}
+          {post.repostCount > 0 && (
+            <View style={{ right: 10, flexDirection: "row" }}>
+              <Ionicons name="repeat-outline" size={16} color="#fff" />
+              <Text style={styles.multiBadgeTxt}>{post.repostCount}</Text>
+            </View>
+          )}
           <TouchableOpacity
             onPress={onToggleSave}
             disabled={saving}
@@ -2583,301 +2651,219 @@ const toggleChildren = (rootId: string) =>
               color={post.saved ? COLORS.accent : COLORS.icon}
             />
           </TouchableOpacity>
-          
           {post.hasVideo ? <Ionicons name="videocam" size={20} color={COLORS.icon} /> : null}
         </View>
       </View>
+      {!!post.description && (
+  <View style={styles.descContainer}>
+    <TText
+      style={styles.description}
+      numberOfLines={descExpanded ? undefined : 2}  // 3 lines when collapsed
+    >
+      {normalizeEmoji(post.description)}
+    </TText>
+   {/* Under description or under title – wherever you put tags */}
 
-      {/* {!!post.commentsList.length && (
-  <View style={{ marginTop: 10 }}>
-    {visibleComments.map((c) => (
-      <View key={String(c.ID)} style={{ marginTop: 6 }}>
-        <Text style={styles.commentLine}>
-          <Text style={styles.commentAuthor}>{c.author}</Text>
-          {" "}
-          <RenderMentionsClickable
-           text={normalizeEmoji(String(c.content || ""))}
-            onPressUsername={onMentionPress}
-            mentionStyle={styles.mentionLink}
-            normalStyle={styles.commentText}
-          />
+    {Array.from(normalizeEmoji(post.description)).length > 120 && (
+      <TouchableOpacity
+        onPress={() => setDescExpanded((v) => !v)}
+        hitSlop={{ top: 4, bottom: 4, left: 4, right: 4 }}
+      >
+        <Text style={styles.descMore}>
+          {descExpanded ? "See less" : "See more"}
         </Text>
-      </View>
+      </TouchableOpacity>
+    )}
+  </View>
+)}
+   {post.tags && post.tags.length > 0 && (
+  <View style={styles.tagsRow}>
+    {post.tags.slice(0, 3).map((t, idx) => (
+      <TouchableOpacity
+        key={idx}
+        style={styles.tagChip}
+        activeOpacity={0.7}
+        onPress={() => {
+          if (t.id) {
+            console.log("t,id",t.id)
+            nav.navigate("ViewProfileScreen", { NTN_User_PkeyID: t.id });
+          } else {
+            Alert.alert("Profile not available", "This tagged user has no profile ID.");
+          }
+        }}
+      >
+        <Text style={styles.tagChipTxt} numberOfLines={1}>
+          @{t.name}
+        </Text>
+      </TouchableOpacity>
     ))}
 
-    {canExpand && !expanded && (
-      <TouchableOpacity onPress={() => setExpanded(true)} style={{ marginTop: 6 }}>
-        <Text style={styles.viewAll}>View all {post.comments} comments</Text>
-      </TouchableOpacity>
-    )}
-    {canExpand && expanded && (
-      <TouchableOpacity onPress={() => setExpanded(false)} style={{ marginTop: 6 }}>
-        <Text style={styles.viewAll}>Hide comments</Text>
-      </TouchableOpacity>
+    {post.tags.length > 3 && (
+      <Text style={styles.tagMore}>+{post.tags.length - 3} more</Text>
     )}
   </View>
-)} */}
-{/* threaded comments */}
+)}
+      {commentModal.open && commentModal.postId === post.id && (
+ <CommentsModal
+ open
+ onClose={closeComments}
+ postId={post.id}
+ totalFromApi={totalCommentsFromApi}
+ comments={commentsFromApi}
+ loading={commentsLoading}
+ ensureLoaded={ensureComments}
+ onSend={({ text, tagged, parentId }) => onSendComment(tagged, parentId, text)}
+ onToggleCommentLike={onToggleCommentLike}  // ✅ parent’s optimistic handler
+ isCommentLikeBusy={isCommentLikeBusy} 
+ searchUsersApi={(q) => searchUsersApi(q, token, String(userprofile?.ID ?? ""))}
+ onPressProfile={(uid) => uid && nav.navigate("ViewProfileScreen", { NTN_User_PkeyID: uid })}
+ COLORS={COLORS}
+ meId={String(userprofile?.ID ?? "")}
+ token={token}
+/>
 
-{!!threaded.length && (
-  <View style={{ marginTop: 10 }}>
-    {rootsToRender.map((root) => {
-      const isOpen = !!expandedChildren[String(root.ID)];
-      const kids = root.children || [];
-      const shownKids = isOpen ? kids : kids.slice(0, 1);
-      const remaining = Math.max(0, kids.length - shownKids.length);
+)}
 
-      return (
-        <View key={String(root.ID)} style={{ marginTop: 10 }}>
-          {/* Root line (avatar + text + Reply) */}
-          <View style={{ flexDirection: "row", alignItems: "flex-start" }}>
-            <TouchableOpacity
-              style={{ marginRight: 8, marginTop: 2 }}
-              onPress={() => nav.navigate("ViewProfileScreen", { NTN_User_PkeyID: root.user_id })}
-            >
-              <Avatar uri={root.author_profile_image} name={root.author} size={18} />
-            </TouchableOpacity>
-
-            <View style={{ flex: 1, paddingRight: 8 }}>
-              <Text style={styles.commentLine}>
-                <Text style={styles.commentAuthor}>{root.author}</Text>{" "}
-                <RenderMentionsClickable
-                  text={normalizeEmoji(String(root.content || ""))}
-                  onPressUsername={onMentionPress}
-                  mentionStyle={styles.mentionLink}
-                  normalStyle={styles.commentText}
+      {/* {showBox && (
+        <View style={styles.commentRow} ref={inputWrapRef}>
+          <TextInput
+            ref={inputRef}
+            value={commentDraft}
+            onChangeText={handleDraftChange}
+            placeholder="Add a comment…"
+            placeholderTextColor={COLORS.sub}
+            style={styles.commentInput}
+            editable={!commenting}
+            returnKeyType="send"
+            blurOnSubmit={false}
+            onFocus={scrollInputIntoView}
+            onSubmitEditing={handleSend}
+          />
+          <TouchableOpacity onPress={handleSend} disabled={commenting || !commentDraft.trim()} style={styles.sendBtn}>
+            {commenting ? <ActivityIndicator size="small" /> : <Ionicons name="send" size={18} color={commentDraft.trim() ? COLORS.text : COLORS.sub} />}
+          </TouchableOpacity>
+          {mentionOpen && (
+            <View style={styles.mentionBox}>
+              {mentionLoading ? (
+                <Text style={styles.mentionHint}>Searching…</Text>
+              ) : mentionList.length === 0 ? (
+                <Text style={styles.mentionHint}>{mentionQuery ? `No users for “${mentionQuery}”` : "Type after @ to search"}</Text>
+              ) : (
+                <FlatList
+                  keyboardShouldPersistTaps="always"
+                  data={mentionList}
+                  keyExtractor={(u) => u.id}
+                  renderItem={({ item }) => (
+                    <TouchableOpacity style={styles.mentionRow} onPress={() => insertMention(item)}>
+                      <Avatar uri={item.avatar} name={item.username || item.name} size={20} border />
+                      <View style={{ flex: 1 }}>
+                        <Text style={styles.mentionName}>{item.name}</Text>
+                        <Text style={styles.mentionUser}>@{item.username}</Text>
+                      </View>
+                    </TouchableOpacity>
+                  )}
+                  style={{ maxHeight: 160 }}
                 />
-              </Text>
-
-              <TouchableOpacity onPress={() => onTapReply(root)} style={{  }}>
-                <Text allowFontScaling={false} style={{ color: "#7EA1FF", fontSize: 12,lineHeight:20 ,includeFontPadding: true }}>Reply</Text>
-              </TouchableOpacity>
+              )}
             </View>
-          </View>
-
-          {/* Children */}
-          {shownKids.map((child) => (
-            <View
-              key={String(child.ID)}
-              style={{
-                marginTop: 8,
-                marginLeft: 26,
-                paddingLeft: 12,
-                borderLeftWidth: 1,
-                borderLeftColor: COLORS.border,
-              }}
-            >
-              <View style={{ flexDirection: "row", alignItems: "flex-start" }}>
-                <TouchableOpacity
-                  style={{ marginRight: 8, marginTop: 2 }}
-                  onPress={() => nav.navigate("ViewProfileScreen", { NTN_User_PkeyID: child.user_id })}
-                >
-                  <Avatar uri={child.author_profile_image} name={child.author} size={16} />
-                </TouchableOpacity>
-
-                <View style={{ flex: 1 }}>
-                  <Text style={styles.commentLine}>
-                    <Text style={styles.commentAuthor}>{child.author}</Text>{" "}
-                    <RenderMentionsClickable
-                      text={normalizeEmoji(String(child.content || ""))}
-                      onPressUsername={onMentionPress}
-                      mentionStyle={styles.mentionLink}
-                      normalStyle={styles.commentText}
-                    />
-                  </Text>
-{/* {root.user_id===userprofile?.Id && */}
-                  <TouchableOpacity onPress={() => onTapReply(child)} style={{ }}>
-                    <Text style={{ color: COLORS.sub, fontSize: 12, }}>Reply</Text>
-                  </TouchableOpacity>
-    {/* } */}
-                </View>
-              </View>
-            </View>
-          ))}
-
-          {/* Per-root expand/collapse for children */}
-          {kids.length > 2 && (
-            <TouchableOpacity onPress={() => toggleChildren(String(root.ID))} style={{ marginTop: 6, marginLeft: 26 }}>
-              <Text style={styles.viewAll}>
-                {isOpen ? "Hide replies" : `View ${remaining} more repl${remaining === 1 ? "y" : "ies"}`}
-              </Text>
-            </TouchableOpacity>
           )}
         </View>
-      );
-    })}
-
-    {/* overall expand/collapse for roots (your existing controls) */}
-    {canExpand && !expanded && (
-      <TouchableOpacity onPress={() => setExpanded(true)} style={{ marginTop: 6 }}>
-        <Text style={styles.viewAll}>View all {totalCommentsFromApi} comments</Text>
-      </TouchableOpacity>
-    )}
-    {canExpand && expanded && (
-      <TouchableOpacity onPress={() => setExpanded(false)} style={{ marginTop: 6 }}>
-        <Text style={styles.viewAll}>Hide comments</Text>
-      </TouchableOpacity>
-    )}
-  </View>
-)}
-
-
-
-
-
-
-
-
-
-
-
-      {/* Comment input */}
-      {showBox && (
-  <View style={styles.commentRow}>
-    <TextInput
-      ref={inputRef}
-      value={commentDraft}
-      onChangeText={handleDraftChange}
-      placeholder="Add a comment…"
-      placeholderTextColor={COLORS.sub}
-      style={styles.commentInput}
-      editable={!commenting}
-      returnKeyType="send"
-      blurOnSubmit={false}
-      onFocus={scrollInputIntoView} 
-      onSubmitEditing={handleSend}   />
- 
-<TouchableOpacity onPress={handleSend} disabled={commenting || !commentDraft.trim()} style={styles.sendBtn}>
-  {commenting ? (
-    <ActivityIndicator size="small" />
-  ) : (
-    <Ionicons name="send" size={18} color={commentDraft.trim() ? COLORS.text : COLORS.sub}/>
-  )}
-</TouchableOpacity>
-
-
-    {mentionOpen && (
-      <View style={styles.mentionBox}>
-        {mentionLoading ? (
-          <Text style={styles.mentionHint}>Searching…</Text>
-        ) : mentionList.length === 0 ? (
-          <Text style={styles.mentionHint}>
-            {mentionQuery ? `No users for “${mentionQuery}”` : "Type after @ to search"}
-          </Text>
-        ) : (
-          <FlatList
-            keyboardShouldPersistTaps="always"
-            data={mentionList}
-            keyExtractor={(u) => u.id}
-            renderItem={({ item }) => (
-              <TouchableOpacity
-                style={styles.mentionRow}
-                onPress={() => insertMention(item)}
-              >
-                 <Avatar
-    uri={item.avatar}
-    name={item.username || item.name}
-    size={20}
-    border
-  />
-                {/* <Image
-                  source={{ uri: item.avatar || AVATAR_PLACEHOLDER }}
-                  style={styles.mentionAvatar}
-                /> */}
-                <View style={{ flex: 1 }}>
-                  <Text style={styles.mentionName}>{item.name}</Text>
-                  <Text style={styles.mentionUser}>@{item.username}</Text>
-                </View>
-              </TouchableOpacity>
-            )}
-            style={{ maxHeight: 160 }}
-          />
-        )}
-      </View>
-    )}
-  </View>
-)}
-
+     
+        
+      )} */}
     </View>
   );
 }
+function normalizeRepostedUsers(val: any): any[] {
+  if (!val) return [];
+  if (Array.isArray(val)) return val;
+  if (typeof val === "object") return [val];
+  return [];
+}
 
-/* --------------------- Mapping from API ---------------------- */
 function mapApiPostToCard(p: ApiPost, meId?: string | number): PostCardModel {
   const id = String(p.ID);
   const title = p.title || "Untitled";
   const author = p.author || "—";
-  const avatar = p.author_profile_image || AVATAR_PLACEHOLDER;
-
+  const avatar = p.author_profile_image ;
   const imagesArr = parseCsvImages(p.fields?.images);
   const firstImage = imagesArr[0];
   const image =
     firstImage ||
-    "https://images.unsplash.com/photo-1514525253161-7a46d19cd819?q=80&w=1400&auto=format&fit=crop";
-
-  const hasVideo = !!(p.fields?.video && p.fields.video.trim().length);
+    "";
+    const videoArr = parseCsvImages(p.fields?.video);
+    const hasVideo = videoArr.length > 0;
+    const primaryVideo = videoArr[0] || undefined;
+  // const hasVideo = !!(p.fields?.video && p.fields.video.trim().length);
   const timeAgo = toTimeAgo(p.date);
-
   const likes = parseLikes(p.fields?._likes ?? 0);
   const commentsArr = Array.isArray(p.comments) ? p.comments : [];
-  function parseCsvTags(csv?: string): string[] {
-    if (!csv) return [];
-    return csv
-      .split(",")
-      .map((s) => s.trim())
-      .filter(Boolean);
+  function parseTagPeople(val: any): string[] {
+    if (!val) return [];
+    if (Array.isArray(val)) {
+      return val
+        .map((u) => u?.user_login || u?.display_name || u?.nickname || u?.user_firstname || "")
+        .filter(Boolean);
+    }
+    if (typeof val === "string") {
+      return val
+        .split(",")
+        .map((s) => s.trim())
+        .filter(Boolean);
+    }
+    return [];
   }
-//   const repostCount =
-//   typeof p.repost_count === "number"
-//     ? p.repost_count
-//     : parseInt(String(p.fields?.repost_count ?? 0), 10) || 0;
 
-// // 👇 did *I* repost this?
-// const isRepostedByMe =
-//   isTrueish((p as any).is_reposted_by_user) ||
-//   (p.fields?.reposted_by_users &&
-//     String((p.fields.reposted_by_users as any).ID ?? "") === String(meId));
-const rb: any = (p as any)?.fields?.reposted_by_users || (p as any)?.reposted_by_users || null;
-  const repostedById   = rb?.ID ? String(rb.ID) : undefined;
+  // const tags = parseTagPeople(p.fields?.tag_people);
+  let tags: { id: string; name: string }[] = [];
+
+  if (Array.isArray(p.fields?.tag_people)) {
+    // If tag_people is already an array of objects
+    tags = p.fields.tag_people.map((u: any) => ({
+      id: String(u.ID ?? u.id ?? ""),
+      name: u.display_name || u.user_login || u.name || "",
+    }));
+  } else if (typeof p.fields?.tag_people === "string") {
+    // If WordPress returns comma-separated names only
+    tags = p.fields.tag_people.split(",").map((nm) => ({
+      id: "",                        // no ID available
+      name: nm.trim(),
+    }));
+  }
+  
+  
+  const rbList = normalizeRepostedUsers(
+    (p as any)?.fields?.reposted_by_users ?? (p as any)?.reposted_by_users
+  );
+
+  const firstRb = rbList[0] || null;
+
+  const repostedById = firstRb?.ID != null ? String(firstRb.ID) : undefined;
   const repostedByName =
-    rb?.display_name || rb?.user_nicename || rb?.nickname || rb?.user_firstname || undefined;
+    firstRb?.display_name ||
+    firstRb?.user_nicename ||
+    firstRb?.nickname ||
+    firstRb?.user_firstname ||
+    undefined;
 
-    const toInt = (v: any) => {
-      const n = typeof v === "number" ? v : parseInt(String(v ?? 0), 10);
-      return Number.isFinite(n) ? n : 0;
-    };
-    
-    const repostCount =
-      (p as any).repost_count != null
-        ? toInt((p as any).repost_count)
-        : toInt(p?.fields?.repost_count);
-    
-  const isRepostedByMe =
-    isTrueish((p as any).is_reposted_by_user) ||
-    (repostedById && String(repostedById) === String(meId));
-
-  const isRepostCard =
-    !!repostedById || isTrueish((p as any).is_repost) || isTrueish((p as any)?.fields?.is_repost);
-
-  const tags = parseCsvTags(p.fields?.tag_people);
+  const toInt = (v: any) => {
+    const n = typeof v === "number" ? v : parseInt(String(v ?? 0), 10);
+    return Number.isFinite(n) ? n : 0;
+  };
+  const repostCount = (p as any).repost_count != null ? toInt((p as any).repost_count) : toInt(p?.fields?.repost_count);
+  const isRepostedByMe = isTrueish((p as any).is_reposted_by_user) || (repostedById && String(repostedById) === String(meId));
+  const isRepostCard = !!repostedById || isTrueish((p as any).is_repost) || isTrueish((p as any)?.fields?.is_repost);
+  // const tags = parseCsvTags(p.fields?.tag_people);
   const likedUsers = normalizeLikedUsers(p.fields?._liked_users);
-  const liked =
-    isTrueish((p as any).liked_by_user) ||
-    (meId != null && likedUsers.includes(String(meId)));
-
+  const liked = isTrueish((p as any).liked_by_user) || (meId != null && likedUsers.includes(String(meId)));
   const areFriends =
     typeof p.fields?.are_friends === "boolean"
       ? p.fields.are_friends
       : typeof p.are_friends === "boolean"
       ? p.are_friends
       : false;
-
-  const following =
-    isTrueish((p as any).is_followed) || isTrueish(p.fields?.is_followed);
-
-  const saved =
-    isTrueish((p as any).is_saved) || isTrueish(p.fields?.is_saved);
-
+  const following = isTrueish((p as any).is_followed) || isTrueish(p.fields?.is_followed);
+  const saved = isTrueish((p as any).is_saved) || isTrueish(p.fields?.is_saved);
   return {
     id,
     author,
@@ -2893,25 +2879,71 @@ const rb: any = (p as any)?.fields?.reposted_by_users || (p as any)?.reposted_by
     comments: commentsArr.length,
     commentsList: commentsArr,
     hasVideo,
-    videoUrl: hasVideo ? p.fields!.video!.trim() : undefined,
+    videoUrl: primaryVideo,     // 👈 first video
+    videoUrls: videoArr, 
+    videoThumb: image || "",     // start with first image as fallback
+  videoThumbs: [],   
     imagesCount: imagesArr.length,
     event: p.fields?.event,
     location: p.fields?.location,
     rawDate: p.date,
     liked,
     saved,
-    tags, 
+    tags,
     repostCount,
     isRepostedByMe,
     isRepostCard,
     repostedById,
     repostedByName,
     repostedAt: p.date,
+    description: p.fields?.event_description || "", 
   };
 }
 
-/* ----------------------------- Styles ---------------------------- */
 const styles = StyleSheet.create({
+  tagsRow: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: 6,
+    marginTop: 4,
+  },
+  counterBadge: {
+    position: "absolute",
+    top: 8,
+    right: 8,
+    backgroundColor: "rgba(0,0,0,0.55)",
+    borderRadius: 12,
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+  },
+  counterTxt: {
+    color: "#fff",
+    fontWeight: "700",
+    fontSize: 12,
+  },
+  
+  
+  tagChip: {
+    borderRadius: 999,
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    backgroundColor: COLORS.pillBg,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: COLORS.pillBorder,
+  },
+  
+  tagChipTxt: {
+    color: COLORS.text,
+    fontSize: 12,
+    fontWeight: "600",
+  },
+  
+  tagMore: {
+    color: COLORS.sub,
+    fontSize: 12,
+    alignSelf: "center",
+  },
+  
   topbar: {
     paddingHorizontal: 12,
     paddingTop: 6,
@@ -2930,15 +2962,9 @@ const styles = StyleSheet.create({
   avatarWrap: {
     width: 20,
     height: 20,
-    // borderRadius: 15,
-    // borderColor:"white",
-    // borderWidth:1,
     overflow: "hidden",
-    // marginLeft: 6,
   },
   avatar: { width: "100%", height: "100%" },
-
-  /* Search drawer */
   searchDrawer: {
     backgroundColor: COLORS.surface,
     overflow: "hidden",
@@ -2965,8 +2991,6 @@ const styles = StyleSheet.create({
   searchInput: { flex: 1, color: COLORS.text, paddingRight: 8, fontSize: 14 },
   cancelBtn: { paddingVertical: 6, paddingHorizontal: 6 },
   cancelTxt: { color: COLORS.accent, fontWeight: "700" },
-
-  /* Tabs */
   tabsWrap: {
     flexDirection: "row",
     alignItems: "center",
@@ -2992,8 +3016,6 @@ const styles = StyleSheet.create({
     borderRadius: 2,
     width: 0,
   },
-
-  /* Cards */
   card: {
     backgroundColor: COLORS.card,
     marginHorizontal: 12,
@@ -3020,12 +3042,11 @@ const styles = StyleSheet.create({
     fontSize: 12,
     fontWeight: "700",
   },
-  
   postAvatar: {
     width: 36,
     height: 36,
-    // borderRadius: 18,
-    borderColor:"white",borderWidth:1,
+    borderColor: "white",
+    borderWidth: 1,
     marginRight: 8,
     backgroundColor: "#0A0B0E",
   },
@@ -3034,12 +3055,10 @@ const styles = StyleSheet.create({
   title: { color: COLORS.text, fontSize: 16, fontWeight: "600", marginVertical: 10 },
   menuBackdrop: {
     ...StyleSheet.absoluteFillObject,
-    // ensure it covers the card to capture outside taps
-    // parent card is position: 'relative' by default; backdrop sits above
   },
   menu: {
     position: "absolute",
-    top: 28,           // just below the 3-dot icon
+    top: 28,
     right: 0,
     backgroundColor: COLORS.card,
     borderColor: COLORS.border,
@@ -3067,8 +3086,6 @@ const styles = StyleSheet.create({
     fontSize: 14,
     fontWeight: "600",
   },
-  
-  // Rounded media container for image/video carousel
   media: {
     width: "100%",
     height: 240,
@@ -3076,11 +3093,8 @@ const styles = StyleSheet.create({
     backgroundColor: "#0A0B0E",
     overflow: "hidden",
   },
-
   meta: { color: COLORS.text, marginLeft: 6, fontWeight: "600" },
   sep: { height: 12 },
-
-  /* Follow pill */
   pillBtn: {
     flexDirection: "row",
     alignItems: "center",
@@ -3097,31 +3111,23 @@ const styles = StyleSheet.create({
     backgroundColor: "transparent",
   },
   pillTxt: { color: COLORS.text, fontWeight: "700", fontSize: 12 },
-
-  /* Comments */
-  cAvatar: { width: 16, height: 16, marginRight: 8, backgroundColor: COLORS.card ,borderColor:"white",borderWidth:1},
- 
+  cAvatar: { width: 16, height: 16, marginRight: 8, backgroundColor: COLORS.card, borderColor: "white", borderWidth: 1 },
   commentLine: { color: COLORS.text, fontSize: 14 },
-  commentAuthor: { color: COLORS.text, fontWeight: "700" ,marginLeft:20},
-  commentText: { color: COLORS.text ,marginLeft:10 ,includeFontPadding: true},
+  commentAuthor: { color: COLORS.text, fontWeight: "700", marginLeft: 20 },
+  commentText: { color: COLORS.text, marginLeft: 10, includeFontPadding: true },
   mentionLink: {
-    color: 'grey',
+    color: "grey",
     fontWeight: "700",
-    // subtle pill highlight to match your theme:
-    // backgroundColor: "rgba(229,57,53,0.16)",
     paddingHorizontal: 4,
     borderRadius: 6,
   },
-  
   viewAll: { color: COLORS.sub, fontSize: 13 },
   mentionChip: {
     color: "pink",
-    // backgroundColor: "rgba(229, 57, 53, 0.18)", // soft accent bg
     paddingHorizontal: 4,
     borderRadius: 6,
     overflow: "hidden",
   },
-  
   commentRow: {
     marginTop: 12,
     flexDirection: "row",
@@ -3140,8 +3146,6 @@ const styles = StyleSheet.create({
     paddingRight: 8,
   },
   sendBtn: { paddingHorizontal: 10, paddingVertical: 8 },
-
-  /* Badges & Dots */
   multiBadge: {
     position: "absolute",
     right: 8,
@@ -3155,7 +3159,6 @@ const styles = StyleSheet.create({
     gap: 6,
   },
   multiBadgeTxt: { color: "#fff", fontWeight: "700", fontSize: 12 },
-
   dotsWrap: {
     position: "absolute",
     bottom: 8,
@@ -3175,8 +3178,6 @@ const styles = StyleSheet.create({
   dotActive: {
     backgroundColor: "#fff",
   },
-
-  // audio button
   audioBtn: {
     position: "absolute",
     right: 8,
@@ -3186,8 +3187,6 @@ const styles = StyleSheet.create({
     paddingHorizontal: 8,
     paddingVertical: 6,
   },
-
-  // share album
   albumShareRow: {
     flexDirection: "row",
     justifyContent: "flex-end",
@@ -3237,13 +3236,11 @@ const styles = StyleSheet.create({
     right: -2,
     minWidth: 16,
     height: 16,
-    // borderColor:"white",borderWidth:1,
     backgroundColor: "#EF2C2C",
     paddingHorizontal: 3,
     alignItems: "center",
     justifyContent: "center",
-    borderRadius:10
-  
+    borderRadius: 10,
   },
   badgeTxt: {
     color: "#fff",
@@ -3263,94 +3260,21 @@ const styles = StyleSheet.create({
     marginTop: 8,
   },
   replyChipTxt: { color: COLORS.sub, marginRight: 6, fontSize: 12 },
+  description: {
+    color: COLORS.sub,
+    fontSize: 14,
+    marginBottom: 8,
+    marginTop:10
+  },
+  descContainer: {
+    marginTop: 6,
+  },
   
-  
+  descMore: {
+    color: COLORS.accent,
+    fontSize: 12,
+    fontWeight: "600",
+    marginTop: 4,
+    marginBottom:10
+  },
 });
-{!!threaded.length && (
-  <View style={{ marginTop: 10 }}>
-    {rootsToRender.map((root) => {
-      const isOpen = !!expandedChildren[String(root.ID)];
-      const kids = root.children || [];
-      const shownKids = isOpen ? kids : kids.slice(0, 1);
-      const remaining = Math.max(0, kids.length - shownKids.length);
-      return (
-        <View key={String(root.ID)} style={{ marginTop: 10 }}>
-          <View style={{ flexDirection: "row", alignItems: "flex-start" }}>
-            <TouchableOpacity
-              style={{ marginRight: 8, marginTop: 2 }}
-              onPress={() => nav.navigate("ViewProfileScreen", { NTN_User_PkeyID: root.user_id })}
-            >
-              <Avatar uri={root.author_profile_image} name={root.author} size={18} />
-            </TouchableOpacity>
-            <View style={{ flex: 1, paddingRight: 8 }}>
-              <Text style={styles.commentLine}>
-                <Text style={styles.commentAuthor}>{root.author}</Text>{" "}
-                <RenderMentionsClickable
-                  text={normalizeEmoji(String(root.content || ""))}
-                  onPressUsername={onMentionPress}
-                  mentionStyle={styles.mentionLink}
-                  normalStyle={styles.commentText}
-                />
-              </Text>
-              {/* <TouchableOpacity onPress={() => onTapReply(root)}>
-                <Text allowFontScaling={false} style={{ color: "#7EA1FF", fontSize: 12, lineHeight: 20, includeFontPadding: true }}>
-                  Reply
-                </Text>
-              </TouchableOpacity> */}
-            </View>
-          </View>
-          {shownKids.map((child) => (
-            <View
-              key={String(child.ID)}
-              style={{
-                marginTop: 8,
-                marginLeft: 26,
-                paddingLeft: 12,
-                borderLeftWidth: 1,
-                borderLeftColor: COLORS.border,
-              }}
-            >
-              <View style={{ flexDirection: "row", alignItems: "flex-start" }}>
-                <TouchableOpacity
-                  style={{ marginRight: 8, marginTop: 2 }}
-                  onPress={() => nav.navigate("ViewProfileScreen", { NTN_User_PkeyID: child.user_id })}
-                >
-                  <Avatar uri={child.author_profile_image} name={child.author} size={16} />
-                </TouchableOpacity>
-                <View style={{ flex: 1 }}>
-                  <Text style={styles.commentLine}>
-                    <Text style={styles.commentAuthor}>{child.author}</Text>{" "}
-                    <RenderMentionsClickable
-                      text={normalizeEmoji(String(child.content || ""))}
-                      onPressUsername={onMentionPress}
-                      mentionStyle={styles.mentionLink}
-                      normalStyle={styles.commentText}
-                    />
-                  </Text>
-                  {/* <TouchableOpacity onPress={() => onTapReply(child)}>
-                    <Text style={{ color: COLORS.sub, fontSize: 12 }}>Reply</Text>
-                  </TouchableOpacity> */}
-                </View>
-              </View>
-            </View>
-          ))}
-          {kids.length > 2 && (
-            <TouchableOpacity onPress={() => toggleChildren(String(root.ID))} style={{ marginTop: 6, marginLeft: 26 }}>
-              <Text style={styles.viewAll}>{isOpen ? "Hide replies" : `View ${remaining} more repl${remaining === 1 ? "y" : "ies"}`}</Text>
-            </TouchableOpacity>
-          )}
-        </View>
-      );
-    })}
-    {canExpand && !expanded && (
-      <TouchableOpacity onPress={() => setExpanded(true)} style={{ marginTop: 6 }}>
-        <Text style={styles.viewAll}>View all {totalCommentsFromApi} comments</Text>
-      </TouchableOpacity>
-    )}
-    {canExpand && expanded && (
-      <TouchableOpacity onPress={() => setExpanded(false)} style={{ marginTop: 6 }}>
-        <Text style={styles.viewAll}>Hide comments</Text>
-      </TouchableOpacity>
-    )}
-  </View>
-)}

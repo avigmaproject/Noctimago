@@ -33,6 +33,7 @@ import firestore from "@react-native-firebase/firestore";
 import { firebase } from "@react-native-firebase/app";
 import { uploaddocumnetaws } from "../../utils/Awsfile";
 import Avatar from "../../utils/Avatar";
+import { sendchatnotify, sendnotify } from "../../utils/apiconfig";
 
 /* ---------------- Theme ---------------- */
 const COLORS = {
@@ -149,6 +150,8 @@ export default function ChatDebug({ navigation, route }: any) {
   const userprofile = useSelector(
     (s: any) => s.authReducer?.userprofile
   );
+  console.log("userrrprofile",userprofile)
+console.log("othertoken",otherToken)
   const myUid = String(
     userprofile?.ID ??
       userprofile?.user?.id ??
@@ -513,7 +516,34 @@ export default function ChatDebug({ navigation, route }: any) {
       ]
     );
   };
+  const SendNotification = async (
+    message: string,
+    title: string,
+    receiverId?: string,
+    receiverToken?: string | null,
+    type?: number,
 
+  ) => {
+    try {
+      const me = String(userprofile?.ID ?? "");
+      const rc = String(receiverId ?? "");
+      if (!rc || me === rc) {
+        return;
+      }
+      const payload = JSON.stringify({
+        UserTokens: receiverToken,
+        message: message,
+        msgtitle: title,
+        User_PkeyID:  userprofile?.ID,
+        UserID: 0,
+        NTN_C_L: 1,
+      });
+      await sendchatnotify(payload);
+      
+      console.log("sendnotify",payload)
+    } catch (err) {
+    }
+  };
   /* ---- Sending helpers ---- */
   const randomId = () =>
     Math.random().toString(36).slice(2) +
@@ -630,6 +660,19 @@ export default function ChatDebug({ navigation, route }: any) {
       });
       batch.set(msgRef, msgPayload);
       await batch.commit();
+      const pushBody =
+  payload.kind === "text"
+    ? payload.text.trim()
+    : "sent a photo 📷"; // or `${myName} sent a photo 📷`
+
+await SendNotification(
+  pushBody,            // message/body
+  myName,              // title
+  String(otherUid),    // receiverId
+  otherToken,          // receiverToken (FCM)
+  1
+);
+
     } catch (e: any) {
       // rollback optimistic
       setMessages((p) =>

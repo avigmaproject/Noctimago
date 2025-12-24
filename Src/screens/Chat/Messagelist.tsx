@@ -18,6 +18,8 @@ import {
   ActionSheetIOS
 } from "react-native";
 import firestore from "@react-native-firebase/firestore";
+import { CommonActions } from "@react-navigation/native";
+
 import Feather from "react-native-vector-icons/Feather";
 import AntDesign from "react-native-vector-icons/AntDesign";
 import { useSelector } from "react-redux";
@@ -68,8 +70,8 @@ type Thread = {
   reciverusename?: string;
   senderavatar?: string;
   reciveravatar?: string;
-  senddertoken?: string;
-  recivertoken?: string;
+  sendertoken?: string;   // ✅ correct
+  recivertoken?: string;  // ✅ correct
   senderuserid?: number | string;
   reciveruserid?: number | string;
   
@@ -83,6 +85,8 @@ type WPUser = {
   username?: string;
   email?: string;
   profile_image?: string;
+  user_token?: string; // ✅ ADD
+  
 };
 
 type Group = {
@@ -261,7 +265,8 @@ const openMessagesMenu = () => {
     const myKey = pickMyGroupKey(g);
     if (!myKey) return false;
   
-    if (String((g as any).lastSentBy || '') === String(myKey)) return false;
+    const lastBy = String((g as any).lastSentBy || "");
+    if (myIdCandidates.includes(lastBy)) return false;
   
     const updated = Math.max(
       toMillis(g.updatedAt || g.createdAt),
@@ -275,7 +280,8 @@ const openMessagesMenu = () => {
   
     const seen = Math.max(seenPersist, seenSrv, seenMs, wmark);
     return updated > 0 && updated - seen > 150;
-  }, [pickMyGroupKey, persistedReads, persistReady]);
+  }, [pickMyGroupKey, myIdCandidates, persistedReads, persistReady]);
+  
   
   useEffect(() => {
     if (!myUid || !groups.length || !persistReady) return;
@@ -331,7 +337,10 @@ const openMessagesMenu = () => {
     const dbg = groups.map(g => {
       const updatedSrv = toMillis(g.updatedAt || g.createdAt);
       const updatedMs  = Number((g as any).updatedMs || 0);
-      const seenSrv    = toMillis(g.reads?.[myUid]);
+      const myKey = pickMyGroupKey(g);
+const seenSrv = toMillis(g.reads?.[myKey]);   // ✅ correct
+
+ 
       const seenMs     = Number((g as any).readsMs?.[myUid] || 0);
       const seenLoc    = localReads[g.id] || 0;
       const updated    = Math.max(updatedSrv, updatedMs);
@@ -344,7 +353,7 @@ const openMessagesMenu = () => {
         ,
       };
     });
-    console.log('[groups unread dbg]', JSON.stringify(dbg, null, 2));
+    // console.log('[groups unread dbg]', JSON.stringify(dbg, null, 2));
   }, [groups, localReads, myUid]);
   
 
@@ -444,31 +453,42 @@ const openMessagesMenu = () => {
 // }, [threads]));
 useEffect(() => {
   const chatUnread  = threads.filter(isThreadUnread).length;
-  const groupUnread = groups.filter(isGroupUnread).length;
+  const groupUnread = persistReady ? groups.filter(isGroupUnread).length : 0;
   const total = chatUnread + groupUnread;
 
-  const stack = navigation.getParent?.();
-  const tabs  = stack?.getParent?.() ?? stack;
-  tabs?.setParams?.({ chatUnreadCount: total });
+  const tabs = navigation.getParent?.()?.getParent?.() ?? navigation.getParent?.();
+  if (!tabs?.getState || !tabs?.dispatch) return;
 
-}, [threads, groups, isThreadUnread, isGroupUnread, navigation]);
+  const state = tabs.getState();
+  const chatRoute = state.routes.find((r: any) => r.name === "Chat");
+  if (!chatRoute) return;
 
-useFocusEffect(useCallback(() => {
-  const chatUnread  = threads.filter(isThreadUnread).length;
-  const groupUnread = groups.filter(isGroupUnread).length;
-  const total = chatUnread + groupUnread;
+  // ✅ updates badge even when total becomes 0, without switching tab
+  tabs.dispatch({
+    ...CommonActions.setParams({ chatUnreadCount: total }),
+    source: chatRoute.key,
+  });
+}, [threads, groups, isThreadUnread, isGroupUnread, navigation, persistReady]);
 
-  const stack = navigation.getParent?.();
-  const tabs  = stack?.getParent?.() ?? stack;
-  tabs?.setParams?.({ chatUnreadCount: total });
 
-}, [threads, groups, isThreadUnread, isGroupUnread, navigation]));
+
+
+// useFocusEffect(useCallback(() => {
+//   const chatUnread  = threads.filter(isThreadUnread).length;
+//   const groupUnread = groups.filter(isGroupUnread).length;
+//   const total = chatUnread + groupUnread;
+
+//   const stack = navigation.getParent?.();
+//   const tabs  = stack?.getParent?.() ?? stack;
+//   tabs?.setParams?.({ chatUnreadCount: total });
+
+// }, [threads, groups, isThreadUnread, isGroupUnread, navigation]));
 
 
   useEffect(() => {
     const gIds = groups.filter(isGroupUnread).map(g => g.id);
     const tIds = threads.filter(isThreadUnread).map(t => t.id);
-    console.log('[badge debug]', { groupUnreadIds: gIds, threadUnreadIds: tIds });
+    // console.log('[badge debug]', { groupUnreadIds: gIds, threadUnreadIds: tIds });
   }, [groups, threads, isGroupUnread]);
   
   useEffect(() => {
@@ -505,8 +525,11 @@ useFocusEffect(useCallback(() => {
     let dirty = false;
   
     groups.forEach(g => {
+      const myKey = pickMyGroupKey(g);
+const seenSrv = toMillis(g.reads?.[myKey]);   // ✅ correct
+
       const updated = toMillis(g.updatedAt || g.createdAt);
-      const seenSrv = toMillis(g.reads?.[myUid]);                 // 0 if missing
+                 // 0 if missing
       const seenMs  = Number((g as any).readsMs?.[myUid] || 0);
   
       // If we previously recorded a client read (readsMs) that covers the update,
@@ -729,7 +752,7 @@ const openThreadMenu = (t: Thread) => {
   const startChat = useCallback(
     async (tOrUser: Thread | WPUser, fromPeople?: boolean) => {
       console.log("▶️ startChat called", { fromPeople, tOrUser });
-  
+  console.log("otherToken",tOrUser)
       let otherId = "";
       let otherName = "User";
       let otherAvatar = DUMMY_AVATAR;
@@ -752,7 +775,13 @@ const openThreadMenu = (t: Thread) => {
           : t.reciveravatar || DUMMY_AVATAR;
   
         // make sure your field names match your data (no `senddertoken` typo)
-        otherToken = otherIsSender ? t.sendertoken : t.recivertoken;
+        const iAmSender = String(t.sentBy) === String(myUid);
+
+        otherToken = iAmSender
+          ? (t.recivertoken ?? null)   // if I sent last, other is receiver
+          : (t.sendertoken ?? null);   // if other sent last, other is sender
+        
+
         otherWPId = otherIsSender ? t.senderuserid : t.reciveruserid;
       } else {
         const u = tOrUser as WPUser;
@@ -762,6 +791,7 @@ const openThreadMenu = (t: Thread) => {
         otherName = u.display_name || (u as any).username || "User";
         otherAvatar = (u as any).profile_image || DUMMY_AVATAR;
         otherWPId = u.ID;
+        otherToken = u.user_token ?? null;
       }
 
      const sortedId = [myUid, otherId].sort().join("-");
@@ -810,7 +840,7 @@ try {
         unread: isGroupUnread(g),
       };
     });
-    console.log('[groups dbg]', JSON.stringify(dbg, null, 2));
+    // console.log('[groups dbg]', JSON.stringify(dbg, null, 2));
   }, [groups, localReads, isGroupUnread, pickMyGroupKey]);
   
   
@@ -967,6 +997,7 @@ try {
       username: u.user_login || u.username || "",
       email: u.email || "",
       profile_image: u.profile_image || "",
+      user_token:u.user_token
     }));
   };
 
@@ -975,7 +1006,9 @@ try {
     try {
       const res = await fetch(`https://noctimago.com/wp-json/app/v1/users?page=1`);
       const json = await res.json();
+  
       const list = parseUsersPayload(json);
+      // console.log("jsonnnnn======>",json)
       setPeople(list);
     } catch (e) {
       console.log("[people] fetch error", e);
@@ -995,6 +1028,7 @@ try {
 
   const filteredPeople = useMemo(() => {
     const q = query.trim().toLowerCase();
+    console.log("q",q)
     if (!q) return people;
     return people.filter(u => String(u.ID) !== myUid).filter(
       (u) =>
@@ -1161,6 +1195,7 @@ const createGroup = async () => {
   };
 
   const renderPerson = ({ item }: { item: WPUser }) => {
+    // console.log("item===>",item)
     const name = item.display_name || (item as any).username || "User";
     const avatar = (item as any).profile_image || DUMMY_AVATAR;
     const picked = selectedUserIds.has(String(item.ID));
