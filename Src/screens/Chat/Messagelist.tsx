@@ -22,11 +22,12 @@ import { CommonActions } from "@react-navigation/native";
 
 import Feather from "react-native-vector-icons/Feather";
 import AntDesign from "react-native-vector-icons/AntDesign";
-import { useSelector } from "react-redux";
+import { useDispatch, useSelector } from "react-redux";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import Avatar from "../../utils/Avatar";
 import { useFocusEffect } from "@react-navigation/native";
 import AsyncStorage from "@react-native-async-storage/async-storage";
+import {setInitialroute, setInitialName} from '../../store/action/auth/action';
 
 // store reads per user key so you don’t mix profiles (same device, different logins)
 const storageKeyFor = (myKey: string) => `groupReads:${myKey}`;
@@ -145,8 +146,14 @@ const [persistReady, setPersistReady] = useState(false);
   const [groupQuery, setGroupQuery] = useState("");
 
   const db = firestore();
+  const dispatch = useDispatch();
 // --- Safety helpers (Guideline 1.2) ---
-
+useEffect(() => {
+  return () => {
+    dispatch(setInitialroute('Home'));
+    dispatch(setInitialName('Home'));
+  };
+}, []);
 const reportUser = async (
   myUid: string,
   reportedUserId: string,

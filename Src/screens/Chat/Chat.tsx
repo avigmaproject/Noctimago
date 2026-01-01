@@ -516,13 +516,29 @@ console.log("othertoken",otherToken)
       ]
     );
   };
+  async function getReceiverTokenFromFirestore(userId: string): Promise<string | null> {
+    const uid = String(userId);
+    const docRef = firestore().collection("users").doc(uid);
+  
+    const snap = await docRef.get();
+    if (!snap.exists) {
+      console.log("[FCM] doc missing:", uid);
+      return null;
+    }
+  
+    const data = snap.data();
+    const tok = (data?.fcmToken ?? "").trim();
+  
+    console.log("[FCM] Firestore token for", uid, "=", tok.slice(0, 25), "...");
+    return tok || null;
+  }
   const SendNotification = async (
     message: string,
     title: string,
     receiverId?: string,
     receiverToken?: string | null,
     type?: number,
-
+  
   ) => {
     try {
       const me = String(userprofile?.ID ?? "");
@@ -530,13 +546,21 @@ console.log("othertoken",otherToken)
       if (!rc || me === rc) {
         return;
       }
+      let tokenToUse
+  
+      if (!tokenToUse) {
+        tokenToUse = await getReceiverTokenFromFirestore(rc);
+      }
+      
+      console.log("[SendNotification] using token =", tokenToUse?.slice(0, 25), "...");
+      
       const payload = JSON.stringify({
-        UserTokens: receiverToken,
+        UserTokens: tokenToUse,
         message: message,
         msgtitle: title,
         User_PkeyID:  userprofile?.ID,
         UserID: 0,
-        NTN_C_L: 1,
+        NTN_C_L: 3,
       });
       await sendchatnotify(payload);
       
