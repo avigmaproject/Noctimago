@@ -23,6 +23,8 @@ import {
   ActivityIndicator,
 } from "react-native";
 import Ionicons from "react-native-vector-icons/Ionicons";
+import messaging from "@react-native-firebase/messaging";
+import firestore from "@react-native-firebase/firestore";
 import { findNodeHandle } from "react-native";
 import { AvoidSoftInput, AvoidSoftInputView } from "react-native-avoid-softinput";
 import {
@@ -34,8 +36,10 @@ import {
   add_friend,
   sendnotify,
   getnotify,
+  updateprofile,
 } from "../../utils/apiconfig";
 import { UserProfile } from "../../store/action/auth/action";
+import { createThumbnail } from "react-native-create-thumbnail";
 import { useSelector, useDispatch } from "react-redux";
 import { TText } from "../../i18n/TText";
 import DateTimePickerModal from "react-native-modal-datetime-picker";
@@ -79,6 +83,29 @@ const FILTERS = [
   { key: "date", label: "By Date/Event", icon: "calendar" },
   { key: "video", label: "Video Only", icon: "videocam-outline" },
 ] as const;
+const videoThumbCache: Record<string, string> = {}; // videoUrl -> local thumb path
+const toFileUri = (p?: string | null) => {
+  if (!p) return "";
+  if (p.startsWith("http")) return p;
+  if (p.startsWith("file://")) return p;
+  return Platform.OS === "android" ? `file://${p}` : p;
+};
+
+async function getVideoThumb(videoUrl: string): Promise<string | null> {
+  const key = (videoUrl || "").trim();
+  if (!key) return null;
+
+  if (videoThumbCache[key]) return videoThumbCache[key];
+
+  try {
+    const t = await createThumbnail({ url: key, timeStamp: 1000 });
+    const fixed = toFileUri(t.path);          // ✅ important
+    videoThumbCache[key] = fixed;
+    return fixed;
+  } catch (e) {
+    return null;
+  }
+}
 
 type ApiComment = {
   ID: string | number;
@@ -99,6 +126,7 @@ type ApiPost = {
   author: string;
   author_id?: string | number;
   author_profile_image?: string;
+  user_token?: string | null; // ✅ ADD
   date: string;
   fields: {
     event?: string;
@@ -140,6 +168,7 @@ type PostCardModel = {
   image: string;
   images: string[];
   likes: number;
+  receiverToken?: string | null; // ✅ ADD
   comments: number;
   commentsList: ApiComment[];
   hasVideo: boolean;
@@ -158,6 +187,8 @@ type PostCardModel = {
   repostedById?: string;
   repostedByName?: string;
   repostedAt?: string;
+  videoThumb?: string;     // 👈 add
+  videoThumbs?: string[]
 };
 
 type TaggedUser = { id: string; username: string };
@@ -778,11 +809,17 @@ const [hasLoadedOnce, setHasLoadedOnce] = useState(false);   // prevents "No pos
   const [tabsWidth, setTabsWidth] = useState(0);
   const tabWidth = tabsWidth > 0 ? tabsWidth / FILTERS.length : 0;
   const activeIndex = FILTERS.findIndex((f) => f.key === active);
-  const bannerAdId = __DEV__ ? TestIds.BANNER : "ca-app-pub-2847186072494111/8751364810";
-
+// for android// const bannerAdId =  "ca-app-pub-2847186072494111/3698240885";
+// const INTERSTITIAL_UNIT_ID = __DEV__
+//   ? TestIds.INTERSTITIAL
+//   : "ca-app-pub-2847186072494111/5687551304"; // your real id
+// const bannerAdId= 'ca-app-pub-2847186072494111/9619792570'
+const bannerAdId= 'ca-app-pub-2847186072494111/3698240885'
 const INTERSTITIAL_UNIT_ID = __DEV__
   ? TestIds.INTERSTITIAL
-  : "ca-app-pub-2847186072494111/8751364810"; // your real id
+  : "ca-app-pub-2847186072494111/5687551304";
+
+
 
 const interstitialRef = useRef<InterstitialAd | null>(null);
 const [interstitialLoaded, setInterstitialLoaded] = useState(false);
@@ -912,7 +949,7 @@ useEffect(() => {
           const message = `${
             userprofile?.username || userprofile?.display_name || "Someone"
           } liked your comment`;
-          SendNotification(message, title, String(targetId), 1, Number(postId));
+          SendNotification(message, title, String(targetId), '',1, Number(postId));
         }
       
         }
@@ -991,7 +1028,45 @@ useEffect(() => {
       }
     })();
   }, []);
+  const updateToken = async () => {
+    const fcmtoken = await getFcmToken();
+    try {
+      const payload = JSON.stringify({
+        user_token:fcmtoken
+      });
+console.log("updateToken====>",payload)
+      await updateprofile(payload, token);
 
+
+    } catch (error: any) {
+     
+    } finally {
+      
+    }
+  };
+  const saveMyFcmToken = async () => {
+
+    try {
+      const fcmtoken = await getFcmToken();
+      if (!token || !userprofile?.ID) return;
+  
+      console.log("📲 Saving FCM token", token.slice(0, 20) + "...");
+  
+      await firestore()
+        .collection("users")
+        .doc(String(userprofile.ID))
+        .set(
+          {
+            fcmToken: fcmtoken,
+            platform: Platform.OS,
+            updatedAt: firestore.FieldValue.serverTimestamp(),
+          },
+          { merge: true }
+        );
+    } catch (e) {
+      console.log("❌ Failed to save FCM token", e);
+    }
+  };
   function extractUnreadCount(payload: any): number {
     const pick = (obj: any): number => {
       if (!obj || typeof obj !== "object") return 0;
@@ -1069,6 +1144,8 @@ useEffect(() => {
   useFocusEffect(
     React.useCallback(() => {
       GetAllPost();
+      updateToken()
+      saveMyFcmToken()
       setCommentsByPost({});
       posts.forEach((p) => loadCommentsForPost(p.id));
       return undefined;
@@ -1076,7 +1153,19 @@ useEffect(() => {
   );
 
 
-
+  useEffect(() => {
+    const unsub = messaging().onTokenRefresh(async (newToken) => {
+      console.log("[FCM] token refreshed:", newToken.slice(0, 25), "...");
+      if (userprofile?.ID) {
+        await firestore().collection("users").doc(String(userprofile.ID)).set(
+          { fcmToken: newToken, platform: Platform.OS, updatedAt: firestore.FieldValue.serverTimestamp() },
+          { merge: true }
+        );
+      }
+    });
+  
+    return unsub;
+  }, [userprofile?.ID]);
   useFocusEffect(
     React.useCallback(() => {
       // When Home tab gains focus, reload feed & comments
@@ -1101,22 +1190,59 @@ useEffect(() => {
     } catch (error) {
     }
   };
-
+  async function getReceiverTokenFromFirestore(userId: string): Promise<string | null> {
+    const uid = String(userId);
+    const docRef = firestore().collection("users").doc(uid);
+  
+    const snap = await docRef.get();
+    if (!snap.exists) {
+      console.log("[FCM] doc missing:", uid);
+      return null;
+    }
+  
+    const data = snap.data();
+    const tok = (data?.fcmToken ?? "").trim();
+  
+    console.log("[FCM] Firestore token for", uid, "=", tok.slice(0, 25), "...");
+    return tok || null;
+  }
+  
   const SendNotification = async (
     message: string,
     title: string,
     receiverId?: string,
+    receiverToken?: string | null,
     type?: number,
     postId?: number
   ) => {
     try {
       const me = String(userprofile?.ID ?? "");
       const rc = String(receiverId ?? "");
+  
+      console.log("[SendNotification] START", {
+        me,
+        rc,
+      
+      });
+  
+      // ❌ no receiver OR self-notification
       if (!rc || me === rc) {
+        console.log("[SendNotification] Skipped (self or invalid receiver)");
         return;
       }
+  
+      // 🔁 fallback to Firestore
+       let tokenToUse
+
+      if (!tokenToUse) {
+        tokenToUse = await getReceiverTokenFromFirestore(rc);
+      }
+      
+      console.log("[SendNotification] using token =", tokenToUse?.slice(0, 25), "...");
+      
+  
       const payload = JSON.stringify({
-        UserToken: fcmToken,
+        UserToken: tokenToUse,
         message,
         msgtitle: title,
         User_PkeyID: userprofile?.ID,
@@ -1124,15 +1250,20 @@ useEffect(() => {
         NTN_C_L: type,
         NTN_Sender_Name: userprofile?.meta?.first_name,
         NTN_Sender_Img: userprofile?.meta?.profile_image,
-        NTN_Reciever_Name: "",
-        NTN_Reciever_Img: "",
         NTN_UP_PkeyID: postId,
         NTN_UP_Path: "",
       });
-      await sendnotify(payload, token);
+  
+      console.log("[SendNotification] Payload →", payload);
+  
+      const res = await sendnotify(payload, token);
+      console.log("[SendNotification] ✅ Sent", res);
     } catch (err) {
+      console.log("[SendNotification] ❌ ERROR", err);
     }
   };
+  
+  
 
   const GetAllPost = useCallback(async () => {
     if (getAllPostInFlight.current) return;        // avoid racing fetches
@@ -1145,6 +1276,41 @@ useEffect(() => {
       const mapped = apiPosts.map((p) => mapApiPostToCard(p, userprofile?.ID));
       setRawPosts(apiPosts);
       setPosts(mapped);
+
+      // ✅ generate thumbs in background and patch posts
+      (async () => {
+        const updates: Record<string, { primary?: string; all?: string[] }> = {};
+      
+        await Promise.all(
+          mapped.map(async (p) => {
+            if (!p.hasVideo || !p.videoUrls?.length) return;
+      
+            const thumbs = await Promise.all(
+              p.videoUrls.map((u) => getVideoThumb(u))
+            );
+      
+            const clean = thumbs.filter(Boolean) as string[];
+            if (clean.length) {
+              updates[p.id] = { primary: clean[0], all: clean };
+            }
+          })
+        );
+      
+        if (Object.keys(updates).length) {
+          setPosts((prev) =>
+            prev.map((p) =>
+              updates[p.id]
+                ? {
+                    ...p,
+                    videoThumb: updates[p.id].primary || p.videoThumb,
+                    videoThumbs: updates[p.id].all || p.videoThumbs,
+                  }
+                : p
+            )
+          );
+        }
+      })();
+      
   
       // kick comment loads after posts are set (no forEach on stale state)
       mapped.forEach((p) => loadCommentsForPost(p.id));
@@ -1155,7 +1321,7 @@ useEffect(() => {
     } finally {
       getAllPostInFlight.current = false;
       // tiny delay smooths out ultra-fast flicker on some devices
-      setTimeout(() => setLoadingPosts(false), 120);
+      setTimeout(() => setLoadingPosts(false), 20);
     }
   }, [token, userprofile?.ID, loadCommentsForPost]);
   
@@ -1270,6 +1436,7 @@ const refresh = async () => {
   });
 
   const onRepost = async (post: PostCardModel) => {
+  
     try {
       if (!token) {
         Alert.alert("Sign in required", "Please log in to repost.");
@@ -1284,10 +1451,11 @@ const refresh = async () => {
         if (post.authorId && String(post.authorId) !== String(userprofile?.ID)) {
           const title = "Repost";
           const message = `${userprofile?.username || "Someone"} reposted your post`;
-          SendNotification(message, title, String(post.authorId), 1, Number(post.id));
+          SendNotification(message, title, String(post.authorId),post.receiverToken , 1, Number(post.id));
         }
         await GetAllPost();
-        Alert.alert("Done", "Post reposted to your feed.");
+        Alert.alert("Done", "Post reposted.");
+
       } catch (e: any) {
         Alert.alert("Repost failed", e?.message || "Please try again.");
       }
@@ -1312,6 +1480,7 @@ const refresh = async () => {
               await unrepostApi(post.id, token);
               await GetAllPost();
               Alert.alert("Done", "Post unreposted.");
+           
             } catch (e: any) {
               Alert.alert("Unrepost failed", e?.message || "Please try again.");
             }
@@ -1340,7 +1509,7 @@ const refresh = async () => {
       },
     });
   };
-
+ 
   const onDeletePost = (post: PostCardModel) => {
     Alert.alert("Delete post?", "Do you want to delete this post?.", [
       { text: "Cancel", style: "cancel" },
@@ -1485,7 +1654,7 @@ const toggleLike = async (postId: string, item: PostCardModel) => {
       const title = "New like";
       const message = `${userprofile?.username || "Someone"} liked your post`;
       {userprofile?.Id!==item?.authorId &&
-      SendNotification(message, title, item?.authorId, 1, Number(postId));
+      SendNotification(message, title, item?.authorId, item.receiverToken,1, Number(postId));
       }
     } else {
       await unlikePostApi(postId, token);
@@ -1556,7 +1725,7 @@ const toggleLike = async (postId: string, item: PostCardModel) => {
   
       // 🔔 1) Notify post author (existing behavior)
       if (item.authorId && String(item.authorId) !== String(userprofile?.ID)) {
-        SendNotification(message, title, item.authorId, 1, Number(postId));
+        SendNotification(message, title, item.authorId, item.receiverToken,   1, Number(postId));
       }
   
       // 🔔 2) If this is a reply, also notify the comment author
@@ -1572,7 +1741,7 @@ const toggleLike = async (postId: string, item: PostCardModel) => {
         ) {
           const replyTitle = "New reply";
           const replyMsg = `${userprofile?.username || userprofile?.display_name || "Someone"} replied to your comment`;
-          SendNotification(replyMsg, replyTitle, String(replyTargetId), 1, Number(postId));
+          SendNotification(replyMsg, replyTitle, String(replyTargetId), item.receiverToken,1, Number(postId));
         }
       }
   
@@ -1583,7 +1752,7 @@ const toggleLike = async (postId: string, item: PostCardModel) => {
   
       for (const t of tagged) {
         const msg = `${userprofile?.username || "Someone"} mentioned you in a comment`;
-        SendNotification(msg, "You were mentioned", t.id, 1, Number(postId));
+        SendNotification(msg, "You were mentioned", t.id,'',    1, Number(postId));
       }
   
       setCommentDrafts((p) => ({ ...p, [postId]: "" }));
@@ -1707,7 +1876,7 @@ const toggleLike = async (postId: string, item: PostCardModel) => {
       if (follow) {await followUserApi(authorId, token);
       const title = "New follower";
       const message = `${userprofile?.username || userprofile?.display_name || "Someone"} started following you`;
-      SendNotification(message, title, authorId, 1);
+      SendNotification(message, title, authorId,'',    1);
       }
       else await unfollowUserApi(authorId, token);
     } catch (e) {
@@ -2082,6 +2251,13 @@ function PostCard({
   isCommentLikeBusy?: (commentId: string) => boolean; 
   
 }) {
+  const [ratioMap, setRatioMap] = useState<Record<number, number>>({}); // index -> ratio (w/h)
+const displayMode = "contain"; // or user setting: "contain" | "cover"
+const runMenuAction = (fn: () => void) => {
+  closeMenu();                 // ✅ close instantly
+  requestAnimationFrame(fn);   // ✅ run action after close (smooth)
+};
+
   const nav = useNavigation<any>();
   const cardRef = useRef<View>(null);
   const inputWrapRef = useRef<View>(null);
@@ -2123,7 +2299,36 @@ function PostCard({
   const meId = useSelector((s: any) => (s.authReducer?.userprofile?.ID ? String(s.authReducer.userprofile.ID) : undefined));
   const [replyTo, setReplyTo] = useState<ApiComment | null>(null);
   const [descExpanded, setDescExpanded] = useState(false);
-
+  const onReportPost = (postId) => {
+    Alert.alert(
+      "Report Post",
+      "Tell us why you are reporting this post:",
+      [
+        { text: "Cancel", style: "cancel" },
+  
+        { text: "Nudity", onPress: () => sendReport(postId, "Nudity") },
+        { text: "Violence", onPress: () => sendReport(postId, "Violence") },
+        { text: "Hate Speech", onPress: () => sendReport(postId, "Hate Speech") },
+        { text: "Spam", onPress: () => sendReport(postId, "Spam") },
+        { text: "Other", onPress: () => sendReport(postId, "Other") },
+      ]
+    );
+  };
+  
+  const sendReport = async (postId, reason) => {
+    try {
+      // await fetch("https://YOURDOMAIN.com/wp-json/app/v1/report_post", {
+      //   method: "POST",
+      //   headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+      //   body: JSON.stringify({ post_id: postId, reason }),
+      // });
+  
+      Alert.alert("Report Submitted", "Thanks for helping keep the community safe.");
+    } catch (e) {
+      Alert.alert("Error", "Could not submit report.");
+    }
+  };
+  
   const onTapReply = (c: ApiComment) => {
     setReplyTo(c);
     setShowBox(true);
@@ -2236,7 +2441,8 @@ const closeComments = () => setCommentModal({ open: false });
     return items;
   }, [post.videoUrls, post.videoUrl, post.images, post.image, post.hasVideo]);
   
-  
+  const totalMediaCount = mediaItems.length;
+
   
   const [slide, setSlide] = useState(0);
   const [mediaWidth, setMediaWidth] = useState(0);
@@ -2370,6 +2576,7 @@ const closeComments = () => setCommentModal({ open: false });
     >
       <Ionicons name="ellipsis-vertical" size={20} color={COLORS.icon} />
     </TouchableOpacity>
+
     {menuOpen && (
       <>
         <TouchableOpacity
@@ -2378,43 +2585,41 @@ const closeComments = () => setCommentModal({ open: false });
           activeOpacity={1}
         />
         <View style={styles.menu}>
-          {isSelf ? (
-            <>
-              <TouchableOpacity
-                style={styles.menuItem}
-                onPress={() => {
-                  closeMenu();
-                  onEdit();
-                }}
-              >
-                <Ionicons name="create-outline" size={18} color={COLORS.text} />
-                <TText style={styles.menuText}>Edit</TText>
-              </TouchableOpacity>
-              <TouchableOpacity
-                style={[styles.menuItem, { borderTopWidth: 0 }]}
-                onPress={() => {
-                  closeMenu();
-                  onDelete();
-                }}
-              >
-                <Ionicons name="trash-outline" size={18} color={COLORS.accent} />
-                <TText style={[styles.menuText, { color: COLORS.accent }]}>
-                  Delete
-                </TText>
-              </TouchableOpacity>
-            </>
-          ) : (
-            <TouchableOpacity
-              style={styles.menuItem}
-              onPress={() => {
-                closeMenu();
-                onRepost();
-              }}
-            >
-              <Ionicons name="repeat-outline" size={18} color={COLORS.text} />
-              <TText style={styles.menuText}>Repost</TText>
-            </TouchableOpacity>
-          )}
+        <View style={styles.menu}>
+  {isSelf ? (
+    <>
+      <TouchableOpacity style={styles.menuItem}  onPress={() => runMenuAction(onEdit)}>
+        <Ionicons name="create-outline" size={18} color={COLORS.text} />
+        <TText style={styles.menuText}>Edit</TText>
+      </TouchableOpacity>
+
+      <TouchableOpacity style={styles.menuItem} onPress={() => runMenuAction(onDelete)}>
+        <Ionicons name="trash-outline" size={18} color={COLORS.accent} />
+        <TText style={[styles.menuText, { color: COLORS.accent }]}>Delete</TText>
+      </TouchableOpacity>
+    </>
+  ) : (
+    <>
+      <TouchableOpacity style={styles.menuItem} onPress={() => runMenuAction(onRepost)}>
+        <Ionicons name="repeat-outline" size={18} color={COLORS.text} />
+        <TText style={styles.menuText}>Repost</TText>
+      </TouchableOpacity>
+
+      {/* ⭐ REQUIRED BY APPLE ⭐ */}
+      <TouchableOpacity
+        style={styles.menuItem}
+        onPress={() => runMenuAction(() => onReportPost(post.id))}
+      >
+        <Ionicons name="flag-outline" size={18} color="red" />
+        <TText style={[styles.menuText, { color: "red" }]}>
+          Report Post
+        </TText>
+      </TouchableOpacity>
+    </>
+  )}
+   
+</View>
+
         </View>
       </>
     )}
@@ -2422,74 +2627,116 @@ const closeComments = () => setCommentModal({ open: false });
 </View>
 
       </View>
+    
 
       <TouchableOpacity onPress={onPress} activeOpacity={0.9}>
       <TText style={styles.title}>{normalizeEmoji(post.title)}</TText>
-        <View style={styles.media} onLayout={(e) => setMediaWidth(e.nativeEvent.layout.width)}>
-          {mediaWidth > 0 && (
-            <FlatList
-              ref={listRef}
-              data={mediaItems}
-              keyExtractor={(_, i) => String(i)}
-              horizontal
-              pagingEnabled
-              showsHorizontalScrollIndicator={false}
-              onScroll={onScrollMedia}
-              scrollEventThrottle={16}
-              initialNumToRender={1}
-              maxToRenderPerBatch={1}
-              windowSize={2}
-              removeClippedSubviews
-              renderItem={({ item }) =>
-                item.type === "video" ? (
-                  <View style={{ width: mediaWidth, height: "100%" }}>
-                    <Video
-                      source={{ uri: item.uri }}
-                      style={StyleSheet.absoluteFill}
-                      resizeMode="cover"
-                      repeat={false}
-                      controls={false}
-                      paused={!shouldPlay || !isVideoActive}
-                      muted={muted}
-                      ignoreSilentSwitch="ignore"
-                      playWhenInactive={false}
-                      playInBackground={false}
-                      poster={post.image}
-                      posterResizeMode="cover"
-                      bufferConfig={{
-                        minBufferMs: 15000,
-                        maxBufferMs: 30000,
-                        bufferForPlaybackMs: 2500,
-                        bufferForPlaybackAfterRebufferMs: 5000,
-                      }}
-                      progressUpdateInterval={800}
-                      maxBitRate={800000}
-                      onError={() => {}}
-                      onEnd={() => {}}
-                      {...(Platform.OS === "android" ? { useTextureView: false } : {})}
-                    />
-                    <View style={[styles.multiBadge, { right: 8, top: 8, bottom: undefined }]}>
-                      <Ionicons name="videocam-outline" size={14} color="#fff" />
-                    </View>
-                    <TouchableOpacity onPress={() => setMuted((m) => !m)} style={styles.audioBtn} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
-                      <Ionicons name={muted ? "volume-mute-outline" : "volume-high-outline"} size={18} color="#fff" />
-                    </TouchableOpacity>
-                  </View>
-                ) : (
-                  <View style={{ width: mediaWidth, height: "100%" }}>
-                    <Image source={{ uri: item.uri }} style={StyleSheet.absoluteFill} />
-                  </View>
-                )
-              }
-            />
-          )}
-          <View style={styles.dotsWrap}>
-            {mediaItems.map((_, i) => (
-              <View key={i} style={[styles.dot, i === slide && styles.dotActive]} />
-            ))}
-          </View>
-        </View>
       </TouchableOpacity>
+      <TouchableOpacity
+  onPress={onPress}
+  activeOpacity={0.85}
+  style={styles.viewPostBtn}
+  // hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
+>
+  <Ionicons name="open-outline" size={14} color="#fff" />
+  <Text style={styles.viewPostTxt}>View Post</Text>
+</TouchableOpacity>
+
+      <View style={styles.media} onLayout={(e) => setMediaWidth(e.nativeEvent.layout.width)}>
+        
+  {mediaWidth > 0 && (
+    <FlatList
+      ref={listRef}
+      data={mediaItems}
+      keyExtractor={(_, i) => String(i)}
+      horizontal
+      pagingEnabled
+      showsHorizontalScrollIndicator={false}
+      onScroll={onScrollMedia}
+      scrollEventThrottle={16}
+      initialNumToRender={1}
+      maxToRenderPerBatch={1}
+      windowSize={2}
+      removeClippedSubviews={false} // ✅ IMPORTANT
+      renderItem={({ item, index }) => {
+        const VIDEO_HEIGHT = 400;
+        const isActiveSlide = index === slide;
+
+        // ✅ only mount & play video when visible + active
+        const shouldRenderVideo = !!shouldPlay && isActiveSlide && item.type === "video";
+
+        return (
+          <View style={{ width: mediaWidth, height: VIDEO_HEIGHT }}>
+            {/* ✅ MEDIA */}
+            {item.type === "video" ? (
+              shouldRenderVideo ? (
+                <Video
+                  source={{ uri: item.uri }}
+                  style={{ width: mediaWidth, height: VIDEO_HEIGHT }}
+                  resizeMode="contain"
+                  paused={!shouldRenderVideo}
+                  muted={muted}
+                  repeat={false}
+                  controls={false}
+                  playInBackground={false}
+                  playWhenInactive={false}
+                  useTextureView={true}
+                  onError={(e) => console.log("VIDEO_ERROR", JSON.stringify(e))}
+                />
+              ) : (
+                <Image
+  source={{ uri: toFileUri(post.videoThumb || post.image) }}  // ✅
+  style={{ width: mediaWidth, height: VIDEO_HEIGHT }}
+  resizeMode="cover"
+/>
+
+              )
+            ) : (
+              <Image
+                source={{ uri: item.uri }}
+                style={{ width: mediaWidth, height: VIDEO_HEIGHT }}
+                resizeMode="cover"
+              />
+            )}
+
+            {/* ✅ SOUND ICON (always visible for video items) */}
+            {item.type === "video" && (
+              <TouchableOpacity
+                style={styles.soundBtn}
+                activeOpacity={0.85}
+                onPress={() => setMuted((m) => !m)}
+              >
+                <Ionicons
+                  name={muted ? "volume-mute-outline" : "volume-high-outline"}
+                  size={22}
+                  color="#fff"
+                />
+              </TouchableOpacity>
+            )}
+          </View>
+        );
+      }}
+    />
+  )}
+
+  {/* ✅ DOTS */}
+  <View style={styles.dotsWrap}>
+    {mediaItems.map((_, i) => (
+      <View key={i} style={[styles.dot, i === slide && styles.dotActive]} />
+    ))}
+  </View>
+ 
+  {/* ✅ COUNTER */}
+  {mediaItems.length > 1 && (
+    <View style={styles.counterBadge}>
+      <Text style={styles.counterTxt}>
+        {slide + 1}/{mediaItems.length}
+      </Text>
+    </View>
+  )}
+</View>
+
+    
 
       <View style={styles.albumShareRow} />
 
@@ -2665,6 +2912,12 @@ const closeComments = () => setCommentModal({ open: false });
     </View>
   );
 }
+function normalizeRepostedUsers(val: any): any[] {
+  if (!val) return [];
+  if (Array.isArray(val)) return val;
+  if (typeof val === "object") return [val];
+  return [];
+}
 
 function mapApiPostToCard(p: ApiPost, meId?: string | number): PostCardModel {
   const id = String(p.ID);
@@ -2717,9 +2970,20 @@ function mapApiPostToCard(p: ApiPost, meId?: string | number): PostCardModel {
   }
   
   
-  const rb: any = (p as any)?.fields?.reposted_by_users || (p as any)?.reposted_by_users || null;
-  const repostedById = rb?.ID ? String(rb.ID) : undefined;
-  const repostedByName = rb?.display_name || rb?.user_nicename || rb?.nickname || rb?.user_firstname || undefined;
+  const rbList = normalizeRepostedUsers(
+    (p as any)?.fields?.reposted_by_users ?? (p as any)?.reposted_by_users
+  );
+
+  const firstRb = rbList[0] || null;
+
+  const repostedById = firstRb?.ID != null ? String(firstRb.ID) : undefined;
+  const repostedByName =
+    firstRb?.display_name ||
+    firstRb?.user_nicename ||
+    firstRb?.nickname ||
+    firstRb?.user_firstname ||
+    undefined;
+
   const toInt = (v: any) => {
     const n = typeof v === "number" ? v : parseInt(String(v ?? 0), 10);
     return Number.isFinite(n) ? n : 0;
@@ -2755,6 +3019,8 @@ function mapApiPostToCard(p: ApiPost, meId?: string | number): PostCardModel {
     hasVideo,
     videoUrl: primaryVideo,     // 👈 first video
     videoUrls: videoArr, 
+    videoThumb: image || "",     // start with first image as fallback
+  videoThumbs: [],   
     imagesCount: imagesArr.length,
     event: p.fields?.event,
     location: p.fields?.location,
@@ -2769,16 +3035,61 @@ function mapApiPostToCard(p: ApiPost, meId?: string | number): PostCardModel {
     repostedByName,
     repostedAt: p.date,
     description: p.fields?.event_description || "", 
+    receiverToken: p.user_token ?? null, // ✅
   };
 }
 
 const styles = StyleSheet.create({
+  viewPostBtn: {
+    alignSelf: 'flex-end',
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,         
+       // minimal gap
+    paddingHorizontal: 6,  // minimal horizontal padding
+    paddingVertical: 2,    // minimal vertical padding
+    marginBottom: 5,
+    borderRadius: 0,       // 🔥 sharp 90° corners
+  },
+  viewPostTxt: {
+    color: '#fff',
+    fontWeight: '700',
+    fontSize: 11,          // slightly smaller for compact look
+  },
+  
   tagsRow: {
     flexDirection: "row",
     flexWrap: "wrap",
     gap: 6,
     marginTop: 4,
   },
+  soundBtn: {
+    position: "absolute",
+    right: 10,
+    bottom: 10,
+    backgroundColor: "rgba(0,0,0,0.55)",
+    borderRadius: 16,
+    paddingHorizontal: 10,
+    paddingVertical: 8,
+    zIndex: 9999,
+    elevation: 30, // ✅ ANDROID IMPORTANT
+  },
+  
+  counterBadge: {
+    position: "absolute",
+    top: 8,
+    right: 8,
+    backgroundColor: "rgba(0,0,0,0.55)",
+    borderRadius: 12,
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+  },
+  counterTxt: {
+    color: "#fff",
+    fontWeight: "700",
+    fontSize: 12,
+  },
+  
   
   tagChip: {
     borderRadius: 999,
@@ -2945,7 +3256,7 @@ const styles = StyleSheet.create({
   },
   media: {
     width: "100%",
-    height: 240,
+     height: 400,
     borderRadius: 12,
     backgroundColor: "#0A0B0E",
     overflow: "hidden",

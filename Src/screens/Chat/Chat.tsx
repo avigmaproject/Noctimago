@@ -34,7 +34,7 @@ import { firebase } from "@react-native-firebase/app";
 import { uploaddocumnetaws } from "../../utils/Awsfile";
 import Avatar from "../../utils/Avatar";
 import { sendchatnotify, sendnotify } from "../../utils/apiconfig";
-
+import ZoomableChatImage from "../../components/ZoomableChatImage";
 /* ---------------- Theme ---------------- */
 const COLORS = {
   bg: "#0B0B12",
@@ -880,10 +880,7 @@ await SendNotification(
               {item.text}
             </Text>
           ) : (
-            <Image
-              source={{ uri: item.image }}
-              style={styles.msgImage}
-            />
+            <ZoomableChatImage uri={item.image} style={styles.msgImage} />
           )}
           <View
             style={{

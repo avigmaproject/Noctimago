@@ -15,6 +15,7 @@ import { uploaddocumnetaws } from '../../utils/Awsfile';
 import { AvoidSoftInput, AvoidSoftInputView } from 'react-native-avoid-softinput';
 import Avatar from "../../utils/Avatar";
 import { sendchatnotify } from '../../utils/apiconfig';
+import ZoomableChatImage from '../../components/ZoomableChatImage';
 const COLORS = { bg:'#0B0B12', card:'#15151F', me:'rgba(82,68,171,0.18)', text:'#EDEDF4', sub:'#9A9AA5', line:'rgba(255,255,255,0.08)', primary:'#F44336',  border:'#1F2127' };
 const DUMMY_AVATAR = 'https://i.pravatar.cc/150?img=1';
 const DEFAULT_GROUP_AVATAR = 'https://upload.wikimedia.org/wikipedia/commons/thumb/b/bc/Unknown_person.jpg/1200px-Unknown_person.jpg';
@@ -631,7 +632,8 @@ useEffect(() => {
               {item.text ? (
                 <Text style={styles.msgText}>{item.text}</Text>
               ) : (
-                <Image source={{ uri: item.image }} style={styles.msgImage} />
+                <ZoomableChatImage uri={item.image} style={styles.msgImage} />
+                // <Image source={{ uri: item.image }} style={styles.msgImage} />
               )}
               <Text style={styles.time}>{timeText}</Text>
               <SeenRow msg={item} />
