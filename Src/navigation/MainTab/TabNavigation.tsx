@@ -9,9 +9,14 @@ import NotificationStack from './Notification/NotificationStack';
 import ProfileStack from './Profile/ ProfileStack';
 import { TText } from '../../i18n/TText';
 import { useAutoI18n } from '../../i18n/AutoI18nProvider';
+import { setInitialName, setInitialroute } from '../../store/action/auth/action';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { useNavigation, useNavigationContainerRef } from '@react-navigation/native';
 import firestore from '@react-native-firebase/firestore';
-import { useSelector } from 'react-redux';
+import { useDispatch, useSelector } from 'react-redux';
+import messaging from "@react-native-firebase/messaging";
+import {navigate } from "../MainTab/RootNav"; // adjust path
+
 
 const Tab = createBottomTabNavigator();
 const COLORS = { bg: '#0E0F12', border: '#1F2127', active: '#E53935', inactive: '#8B8F98' };
@@ -30,14 +35,7 @@ const label =
       </TText>
     );
 
-// safely convert Firestore Timestamp / number / string to ms
-const toMillis = (v: any): number => {
-  if (!v) return 0;
-  if (typeof v?.toDate === 'function') return v.toDate().getTime();
-  if (typeof v === 'number') return v;
-  const t = Date.parse(v as any);
-  return Number.isNaN(t) ? 0 : t;
-};
+
 
 export default function Tabs() {
   const { lang } = useAutoI18n();
@@ -45,7 +43,7 @@ export default function Tabs() {
 
   const bottomPad = Math.max(insets.bottom, 20);
   const height = (Platform.OS === 'ios' ? 54 : 64) + bottomPad;
-
+  const dispatch = useDispatch();
   // current user from Redux
   const userprofile = useSelector((s: any) => s.authReducer?.userprofile);
   const myUid = String(
@@ -55,67 +53,52 @@ export default function Tabs() {
       userprofile?.User_Firebase_UID ??
       ''
   );
+  const navigation = useNavigation() 
+  // useEffect(() => {
+  //   // When user opens app from notification
+  //   messaging().onNotificationOpenedApp(remoteMessage => {
+  //     const key1 = String(remoteMessage?.data?.key1 ?? '');
+  //     if (key1==="3") {
+  //       console.log("remoteMessage",remoteMessage)
+  //       dispatch(setInitialroute('Chat'));
+  //       dispatch(setInitialName('MessageList'));
+  //       navigation.navigate('Chat', { screen: 'MessageList' });
+      
+  //     } else {
+  //       dispatch(setInitialroute('Home'));
+  //       dispatch(setInitialName('NotificationsScreen'));
+  //       navigation.navigate('Home', { screen: 'NotificationsScreen' });
+  //     }
+  //   });
 
-  // unread count for DM threads (your old unreadTotal)
-  const [dmUnread, setDmUnread] = useState(0);
+  //   // When app is closed and opened by notification
+  //   messaging()
+  //     .getInitialNotification()
+  //     .then(remoteMessage => {
+  //       const key1 = String(remoteMessage?.data?.key1 ?? '');
+  //       if (key1==="3") {
+  //         console.log("remoteMessage",remoteMessage)
+  //         dispatch(setInitialroute('Chat'));
+  //         dispatch(setInitialName('MessageList'));
+  //         navigation.navigate('Chat', { screen: 'MessageList' });
+        
+  //       } else {
+  //         dispatch(setInitialroute('Home'));
+  //         dispatch(setInitialName('NotificationsScreen'));
+  //         navigation.navigate('Home', { screen: 'NotificationsScreen' });
+  //       }
+  //     });
+  // }, [dispatch, navigation]);
+  
 
-  // Global unread listener – works even when Chat tab is NOT open
-  useEffect(() => {
-    if (!myUid) return;
-
-    const q = firestore()
-      .collection('messagelist')
-      .where('send', 'array-contains', String(myUid));
-
-    const unsub = q.onSnapshot(
-      snap => {
-        let count = 0;
-        const me = String(myUid);
-
-        snap.docs.forEach(d => {
-          const t: any = d.data();
-
-          // skip threads where I sent the last message
-          const lastSender = String(t.sentBy ?? '');
-          if (lastSender === me) return;
-
-          const updatedMs = toMillis(t.updatedAt || t.createdAt);
-          const rawLastRead = t.lastRead?.[me];
-          const lastReadMs = toMillis(rawLastRead);
-
-          const explicitRead = t.readMap?.[me] === true || t.read === true;
-          const hasText = !!(t.lastmsg && String(t.lastmsg).trim().length);
-
-          const unread =
-            hasText &&
-            !explicitRead &&
-            updatedMs > 0 &&
-            (!lastReadMs || lastReadMs < updatedMs - 500);
-
-          if (unread) count++;
-        });
-
-        setDmUnread(count);
-      },
-      err => {
-        console.log('[Tabs unread listener] ERROR:', err?.code, err?.message);
-      }
-    );
-
-    return () => unsub();
-  }, [myUid]);
-
-  // If you later add group unread, add:
-  // const [groupUnread, setGroupUnread] = useState(0);
-  // and another useEffect with similar logic,
-  // then use dmUnread + groupUnread below.
-
+  
+  
   return (
     <Tab.Navigator
       key={lang}
       screenOptions={({ route }) => {
         // total unread for Chat tab
-        const unread = route.name === 'Chat' ? dmUnread : 0;
+        const unread = route.name === 'Chat' ? route?.params?.chatUnreadCount : 0;
 
         return {
           lazy: false, // mount all tabs immediately (so Chat stack is ready)
@@ -135,7 +118,8 @@ export default function Tabs() {
           tabBarIconStyle: { marginBottom: -2 },
           tabBarLabelStyle: { fontSize: 11, lineHeight: 13, marginTop: 0 },
 
-          tabBarBadge: route.name === 'Chat' && unread > 0 ? unread : undefined,
+          tabBarBadge: route.name === 'Chat' && route?.params?.chatUnreadCount > 0 ? unread : undefined,
+
           tabBarBadgeStyle: { backgroundColor: COLORS.active },
 
           tabBarIcon: ({ focused, color, size }) => {
@@ -158,7 +142,7 @@ export default function Tabs() {
                 break;
             }
 
-            const showDot = route.name === 'Chat' && unread > 0;
+            const showDot = route.name === 'Chat' && route?.params?.chatUnreadCount > 0;
 
             return (
               <View>

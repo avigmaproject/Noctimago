@@ -20,6 +20,7 @@ import Feather from 'react-native-vector-icons/Feather';
 import FontAwesome from 'react-native-vector-icons/FontAwesome';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { useDispatch } from 'react-redux';
+import AppleLoginButton from '../../components/AppleLoginButton';
 // import { setToken } from '../store/authSlice'; // <- Uncomment/adjust if you store token in Redux
 import { register,login,Googlesignin } from '../../utils/apiconfig';
 // import {  , scheduleInterstitialAfter } from '../../ads/interstitial';
@@ -35,9 +36,13 @@ import {
   AdEventType,
   TestIds,
 } from 'react-native-google-mobile-ads';
-const INTERSTITIAL_UNIT_ID = __DEV__
-  ? TestIds.INTERSTITIAL
-  : 'ca-app-pub-2847186072494111/8751364810'; 
+import { INTERSTITIAL_AD_ID } from '../../ads/ids';
+// const INTERSTITIAL_UNIT_ID = __DEV__
+//   ? TestIds.INTERSTITIAL
+//   : 'ca-app-pub-2847186072494111/5687551304'; 
+// use the shared ID so production/release builds pick up the
+// real unit and we don’t repeat the literal everywhere.
+const INTERSTITIAL_UNIT_ID = INTERSTITIAL_AD_ID;
 export default function SignIn({
   navigation,
   onForgot,
@@ -113,20 +118,24 @@ export default function SignIn({
   
   useEffect(() => {
     GoogleSignin.configure({
-    scopes: ['https://www.googleapis.com/auth/drive.readonly'],
+      scopes: ['openid', 'email', 'profile'],
     webClientId:
     '406896981733-hakhrb4g0ad78lq8n010b8oduvlr8ioo.apps.googleusercontent.com',
+
     offlineAccess: true,
     });
     return () => {};
     }, []);
     
   const signIn = async () => {
+  
     const id = Date.now().toString();
 await GoogleSignin.signOut();
 
 await GoogleSignin.hasPlayServices();
+
 const userInfo = await GoogleSignin.signIn();
+console.log("hiiiii",)
 console.log('email', userInfo.data.idToken);
 const payload = JSON.stringify({
   provider:"google",
@@ -351,11 +360,13 @@ return 0
           </View>
 
           {/* Social buttons */}
-          <TouchableOpacity style={styles.socialBtn} onPress={ signIn} disabled={loading}>
+          <TouchableOpacity style={styles.socialBtn} onPress={signIn} disabled={loading}>
             <FontAwesome name="google" size={18} color="#ffffff" style={{ marginRight: 10 }} />
             <Text style={styles.socialLabel}>Sign In With Google</Text>
           </TouchableOpacity>
-
+          {Platform.OS==="ios" &&
+<AppleLoginButton/>
+}
           {/* <TouchableOpacity
             style={[styles.socialBtn, { marginTop: 12 }]}
             onPress={onFacebook}

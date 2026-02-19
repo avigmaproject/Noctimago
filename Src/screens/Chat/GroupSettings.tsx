@@ -11,7 +11,8 @@ import firestore from '@react-native-firebase/firestore';
 import { useSelector } from 'react-redux';
 import ImagePicker from 'react-native-image-crop-picker';
 import { AvoidSoftInputView } from 'react-native-avoid-softinput';
-import { uploaddocumnetaws } from '../../utils/Awsfile';
+// REVIEW: switched from AWS helper to new cloud upload utility
+import { uploadDocument } from '../../utils/CloudUpload';
 
 const COLORS = { bg:'#0B0B12', card:'#15151F', text:'#EDEDF4', sub:'#9A9AA5', line:'rgba(255,255,255,0.08)', primary:'#F44336' };
 const DEFAULT_GROUP_AVATAR = 'https://upload.wikimedia.org/wikipedia/commons/thumb/b/bc/Unknown_person.jpg/1200px-Unknown_person.jpg';
@@ -91,6 +92,7 @@ export default function GroupSettings({ navigation, route }: any) {
   useEffect(() => {
     navigation.setOptions({
       headerShown: true,
+      headerBackTitleVisible: false,
       headerStyle: { backgroundColor: COLORS.bg },
       headerTintColor: '#fff',
       title: 'Group settings',
@@ -132,8 +134,9 @@ export default function GroupSettings({ navigation, route }: any) {
         ? await ImagePicker.openCamera({ writeTempFile: true, includeExif: true, cropping: true, mediaType: 'photo' })
         : await ImagePicker.openPicker({ multiple: false, writeTempFile: true, includeExif: true, cropping: true, mediaType: 'photo' });
 
-      const uploaded: any = await uploaddocumnetaws({ name: `${Date.now()}-${groupId}`, size: 0, type: 'image/jpeg', uri: res.path } as any);
-      const url = uploaded?.location || DEFAULT_GROUP_AVATAR;
+      // REVIEW: uploadDocument returns URL string directly
+      const uploadedUrl: any = await uploadDocument({ name: `${Date.now()}-${groupId}`, size: 0, type: 'image/jpeg', uri: res.path } as any);
+      const url = uploadedUrl || DEFAULT_GROUP_AVATAR;
       await groupRef.set({ avatar: url, updatedAt: firestore.FieldValue.serverTimestamp() }, { merge: true });
     } catch (e: any) {
       if (e?.message?.includes('cancelled')) return;

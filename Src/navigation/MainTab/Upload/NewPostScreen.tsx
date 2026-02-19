@@ -24,7 +24,8 @@ import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context'
 
 // API helpers
 import { createpost, allusers } from '../../../utils/apiconfig';
-import { uploaddocumnetaws } from '../../../utils/Awsfile';
+// REVIEW: switched from AWS helper to new cloud upload utility
+import { uploadDocument } from '../../../utils/CloudUpload';
 
 // i18n
 import { TText } from '../../../i18n/TText';
@@ -74,7 +75,7 @@ const AVATAR =
   'https://upload.wikimedia.org/wikipedia/commons/thumb/b/bc/Unknown_person.jpg/1200px-Unknown_person.jpg';
 
 // ⬇️ put your key here (or pull from env/Config)
-
+const GOOGLE_PLACES_KEY = '';
 
 export default function NewPostScreen({ navigation }: any) {
   /* ------------------------ media state ------------------------ */
@@ -203,9 +204,11 @@ export default function NewPostScreen({ navigation }: any) {
           name: a.fileName ?? `media_${Date.now()}`,
           type: a.type ?? (a.type?.startsWith('video/') ? 'video/mp4' : 'image/jpeg'),
         };
-        const up = await uploaddocumnetaws(file as any, token);
-        const normalizedUrl = decodeURIComponent((up as any).location);
-
+        // REVIEW: using cloud upload utility instead of AWS
+        const upUrl = await uploadDocument(file as any, token);
+        // uploadDocument returns a URL string already; adjust if your implementation differs
+        const normalizedUrl = decodeURIComponent(upUrl as string);
+console.log("normalizedUrl",normalizedUrl)
         if ((file.type || '').startsWith('image/')) {
           setImages((prev) => [
             ...prev,

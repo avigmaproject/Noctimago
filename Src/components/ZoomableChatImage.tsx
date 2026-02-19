@@ -245,7 +245,7 @@ export default function ZoomableChatImage({
 const styles = StyleSheet.create({
   viewerHeader: {
     position: "absolute",
-    top: 0,
+    top: Platform.OS==="ios"?100:10,
     left: 0,
     right: 0,
     paddingTop: 16,

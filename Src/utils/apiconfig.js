@@ -242,6 +242,21 @@ export const readnotify = async (data, access_token) => {
       throw error;
     });
 };
+export const sendchatnotify = async (data) => {
+  return axios(API.SEND_NOTIFICATIONCHAT, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: 'Bearer ' ,
+    },
+    data,
+  })
+    .then(response => response.data)
+    .catch(error => {
+      console.log('errorr comes');
+      throw error;
+    });
+};
 export const getallpost = async ( access_token) => {
   console.log("access_token",access_token)
   return axios(API.GET_ALL_POST, {

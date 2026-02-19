@@ -22,6 +22,7 @@ import {
   Share,
   ActivityIndicator,
 } from "react-native";
+import { Linking } from "react-native";
 import Ionicons from "react-native-vector-icons/Ionicons";
 import messaging from "@react-native-firebase/messaging";
 import firestore from "@react-native-firebase/firestore";
@@ -49,6 +50,7 @@ import Video from "react-native-video";
 import type { ViewToken } from "react-native";
 import Avatar from "../../utils/Avatar";
 import mobileAds, { MaxAdContentRating } from "react-native-google-mobile-ads";
+import { BANNER_AD_ID, INTERSTITIAL_AD_ID } from "../../ads/ids";
 import {
   BannerAd,
   BannerAdSize,
@@ -145,6 +147,8 @@ type ApiPost = {
     reposted_by_users?: { ID?: string | number } | false;
     repost_count?: number | string;
     isPending: true;
+    sponsored?: boolean | "true" | "false" | "1" | "0" | string;
+add_sponsor_link?: string;
   };
   is_reposted_by_user?: boolean | "true" | "false" | 1 | 0;
   repost_count?: number | string;
@@ -189,6 +193,8 @@ type PostCardModel = {
   repostedAt?: string;
   videoThumb?: string;     // 👈 add
   videoThumbs?: string[]
+  sponsored?: boolean;
+sponsorLink?: string;
 };
 
 type TaggedUser = { id: string; username: string };
@@ -809,15 +815,9 @@ const [hasLoadedOnce, setHasLoadedOnce] = useState(false);   // prevents "No pos
   const [tabsWidth, setTabsWidth] = useState(0);
   const tabWidth = tabsWidth > 0 ? tabsWidth / FILTERS.length : 0;
   const activeIndex = FILTERS.findIndex((f) => f.key === active);
-// for android// const bannerAdId =  "ca-app-pub-2847186072494111/3698240885";
-// const INTERSTITIAL_UNIT_ID = __DEV__
-//   ? TestIds.INTERSTITIAL
-//   : "ca-app-pub-2847186072494111/5687551304"; // your real id
-// const bannerAdId= 'ca-app-pub-2847186072494111/9619792570'
-const bannerAdId= 'ca-app-pub-2847186072494111/3698240885'
-const INTERSTITIAL_UNIT_ID = __DEV__
-  ? TestIds.INTERSTITIAL
-  : "ca-app-pub-2847186072494111/5687551304";
+// ads are configured centrally now
+const bannerAdId = BANNER_AD_ID;
+const INTERSTITIAL_UNIT_ID = INTERSTITIAL_AD_ID;
 
 
 
@@ -2098,12 +2098,12 @@ const toggleLike = async (postId: string, item: PostCardModel) => {
   <BannerAd
     unitId={bannerAdId}
     size={BannerAdSize.ADAPTIVE_BANNER}
+    onAdLoaded={() => console.log('[Ad][Home] Banner LOADED')}
+    onAdFailedToLoad={(error) => console.log('[Ad][Home] Banner ERROR', error)}
   />
 )}
 
-<TouchableOpacity onPress={() => setShowBanner(false)}>
-<TText style={{color:"white",marginLeft:10}}>Hide Ads</TText>
-</TouchableOpacity>
+
 
 
 
@@ -2257,7 +2257,41 @@ const runMenuAction = (fn: () => void) => {
   closeMenu();                 // ✅ close instantly
   requestAnimationFrame(fn);   // ✅ run action after close (smooth)
 };
+const isSponsored = !!post.sponsored;
 
+const normalizeUrl = (raw) => {
+  if (!raw) return "";
+  let url = String(raw).trim();
+
+  // remove hidden whitespace/newlines inside (common from API)
+  url = url.replace(/\s+/g, "");
+
+  // add scheme if missing
+  if (!/^https?:\/\//i.test(url)) {
+    url = "https://" + url;
+  }
+
+  return url;
+};
+
+const onBookNow = async () => {
+  console.log("post.sponsorLink", post.sponsorLink);
+
+  const url = normalizeUrl(post.sponsorLink);
+
+  if (!url) {
+    Alert.alert("Unavailable", "No booking link provided.");
+    return;
+  }
+
+  try {
+    // On Android, don't trust canOpenURL for https links—just try opening.
+    await Linking.openURL(encodeURI(url));
+  } catch (e) {
+    console.log("openURL error:", e);
+    Alert.alert("Invalid link", "Could not open booking link.");
+  }
+};
   const nav = useNavigation<any>();
   const cardRef = useRef<View>(null);
   const inputWrapRef = useRef<View>(null);
@@ -2531,6 +2565,7 @@ const closeComments = () => setCommentModal({ open: false });
                 ago
               </TText>
             </View>
+   
           </View>
         </View>
     <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
@@ -2733,7 +2768,12 @@ const closeComments = () => setCommentModal({ open: false });
         {slide + 1}/{mediaItems.length}
       </Text>
     </View>
-  )}
+     )}   
+           {isSponsored && (
+      <View style={styles.sponsoredPill}>
+        <Text style={styles.sponsoredTxt}>Sponsored</Text>
+      </View>
+    )}
 </View>
 
     
@@ -2771,6 +2811,7 @@ const closeComments = () => setCommentModal({ open: false });
         </View>
 
         <View style={{ flexDirection: "row", alignItems: "center" }}>
+       
           {post.repostCount > 0 && (
             <View style={{ right: 10, flexDirection: "row" }}>
               <Ionicons name="repeat-outline" size={16} color="#fff" />
@@ -2791,6 +2832,7 @@ const closeComments = () => setCommentModal({ open: false });
           </TouchableOpacity>
           {post.hasVideo ? <Ionicons name="videocam" size={20} color={COLORS.icon} /> : null}
         </View>
+      
       </View>
       {!!post.description && (
   <View style={styles.descContainer}>
@@ -2840,7 +2882,16 @@ const closeComments = () => setCommentModal({ open: false });
       <Text style={styles.tagMore}>+{post.tags.length - 3} more</Text>
     )}
   </View>
+  
 )}
+
+  {isSponsored && (
+    <View style={{justifyContent:'flex-end',flexDirection:'row',marginTop:10}}>
+    <TouchableOpacity onPress={onBookNow}  style={styles.bookBtn}>
+      <Text style={styles.bookBtnTxt}>More info</Text>
+    </TouchableOpacity>
+    </View>
+  )}
       {commentModal.open && commentModal.postId === post.id && (
  <CommentsModal
  open
@@ -2936,6 +2987,8 @@ function mapApiPostToCard(p: ApiPost, meId?: string | number): PostCardModel {
   const timeAgo = toTimeAgo(p.date);
   const likes = parseLikes(p.fields?._likes ?? 0);
   const commentsArr = Array.isArray(p.comments) ? p.comments : [];
+  const sponsored = isTrueish((p as any)?.fields?.sponsored);
+const sponsorLink = String((p as any)?.fields?.add_sponsor_link ?? "").trim();
   function parseTagPeople(val: any): string[] {
     if (!val) return [];
     if (Array.isArray(val)) {
@@ -3036,6 +3089,8 @@ function mapApiPostToCard(p: ApiPost, meId?: string | number): PostCardModel {
     repostedAt: p.date,
     description: p.fields?.event_description || "", 
     receiverToken: p.user_token ?? null, // ✅
+    sponsored,
+    sponsorLink,
   };
 }
 
@@ -3055,6 +3110,36 @@ const styles = StyleSheet.create({
     color: '#fff',
     fontWeight: '700',
     fontSize: 11,          // slightly smaller for compact look
+  },
+  sponsoredPill: {
+    position: "absolute",
+    top: 5,
+    // right: 8,
+    left:10,
+    backgroundColor: "#fff",
+    borderColor: COLORS.border,
+    borderWidth: StyleSheet.hairlineWidth,
+    paddingHorizontal: 10,
+    paddingVertical: 4,
+   borderRadius:999
+  },
+  sponsoredTxt: {
+    color: '#4B5563',
+    fontSize: 12,
+    fontWeight: "600",
+  },
+  
+  bookBtn: {
+    backgroundColor: '#0B0552',
+ justifyContent:'center',alignItems:'center',
+    marginRight: 10,
+    height:35,width:80
+   
+  },
+  bookBtnTxt: {
+    color: "#fff",
+    fontWeight: "600",
+    fontSize: 12,
   },
   
   tagsRow: {
@@ -3077,7 +3162,7 @@ const styles = StyleSheet.create({
   
   counterBadge: {
     position: "absolute",
-    top: 8,
+    top: 5,
     right: 8,
     backgroundColor: "rgba(0,0,0,0.55)",
     borderRadius: 12,

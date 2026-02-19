@@ -7,9 +7,9 @@ import {
   
   // 🔹 Keep TEST ID while debugging
 
-const INTERSTITIAL_UNIT_ID = __DEV__
-  ? TestIds.INTERSTITIAL
-  : 'ca-app-pub-2847186072494111/8751364810'; // <-- your real interstitial ID later
+import { INTERSTITIAL_AD_ID } from './ids';
+
+const INTERSTITIAL_UNIT_ID = INTERSTITIAL_AD_ID; // centralised constant
 
   // When everything works, change to your real ID:
   // const INTERSTITIAL_UNIT_ID = 'ca-app-pub-XXXXXXXXXXXXXXX/XXXXXXXXXX';

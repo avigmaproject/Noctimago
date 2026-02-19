@@ -9,10 +9,11 @@ import React, {
   useCallback,
   useLayoutEffect,
 } from "react";
+import { InteractionManager } from "react-native";
+
 import {
   View,
   Text,
-  KeyboardAvoidingView,
   Platform,
   StyleSheet,
   StatusBar,
@@ -22,6 +23,9 @@ import {
   TextInput,
   Alert,
   Dimensions,
+  ActionSheetIOS,
+  KeyboardAvoidingView,
+  Keyboard
 } from "react-native";
 import { SafeAreaView, useSafeAreaInsets } from "react-native-safe-area-context";
 import { useFocusEffect } from "@react-navigation/native";
@@ -33,8 +37,9 @@ import firestore from "@react-native-firebase/firestore";
 import { firebase } from "@react-native-firebase/app";
 import { uploaddocumnetaws } from "../../utils/Awsfile";
 import Avatar from "../../utils/Avatar";
-import { sendchatnotify, sendnotify } from "../../utils/apiconfig";
+import { sendchatnotify } from "../../utils/apiconfig";
 import ZoomableChatImage from "../../components/ZoomableChatImage";
+
 /* ---------------- Theme ---------------- */
 const COLORS = {
   bg: "#0B0B12",
@@ -110,13 +115,15 @@ const Header = ({
   avatar,
   onBack,
   topInset,
+  onMorePress,
 }: {
   title: string;
   avatar?: string;
   onBack: () => void;
   topInset: number;
+  onMorePress: () => void;
 }) => (
-  <View style={[styles.header, { paddingTop: topInset }]}>
+  <View style={[styles.header]}>
     <View style={styles.headerRow}>
       <TouchableOpacity
         onPress={onBack}
@@ -124,13 +131,21 @@ const Header = ({
       >
         <Feather name="chevron-left" size={26} color={COLORS.text} />
       </TouchableOpacity>
+
       <View style={styles.headerCenter}>
         <Avatar uri={avatar} name={title} size={28} border />
         <Text numberOfLines={1} style={styles.headerTitle}>
           {title}
         </Text>
       </View>
-      <View style={{ width: 26 }} />
+
+      {/* More / options → report, block */}
+      <TouchableOpacity
+        onPress={onMorePress}
+        hitSlop={{ top: 12, bottom: 12, left: 12, right: 12 }}
+      >
+        <Feather name="more-vertical" size={22} color={COLORS.text} />
+      </TouchableOpacity>
     </View>
     <View style={styles.headerDivider} />
   </View>
@@ -138,7 +153,6 @@ const Header = ({
 
 export default function ChatDebug({ navigation, route }: any) {
   const insets = useSafeAreaInsets();
-  const isIOS = Platform.OS === "ios";
 
   /* ---- Other participant (from route) ---- */
   const otherUid = String(route.params?.userId ?? "");
@@ -147,16 +161,9 @@ export default function ChatDebug({ navigation, route }: any) {
   const otherToken = route.params?.token ?? null;
 
   /* ---- Me (from Redux) ---- */
-  const userprofile = useSelector(
-    (s: any) => s.authReducer?.userprofile
-  );
-  console.log("userrrprofile",userprofile)
-console.log("othertoken",otherToken)
+  const userprofile = useSelector((s: any) => s.authReducer?.userprofile);
   const myUid = String(
-    userprofile?.ID ??
-      userprofile?.user?.id ??
-      userprofile?.User_PkeyID ??
-      ""
+    userprofile?.ID ?? userprofile?.user?.id ?? userprofile?.User_PkeyID ?? ""
   );
   const myName =
     userprofile?.display_name ??
@@ -175,13 +182,81 @@ console.log("othertoken",otherToken)
   const listRef = useRef<FlatList<Msg>>(null);
   const inputRef = useRef<TextInput>(null);
 
-  /* ---- Android soft input behavior ---- */
-  useEffect(() => {
-    if (Platform.OS !== "android") return;
-    AvoidSoftInput.setEnabled(true);
-    AvoidSoftInput.setShouldMimicIOSBehavior(true);
-  }, []);
+  // Sort messages oldest -> newest for display
+  const orderedMessages = useMemo(
+    () =>
+      [...messages].sort(
+        (a, b) =>
+          fixDate(a.createdAt || a.clientCreatedAt).getTime() -
+          fixDate(b.createdAt || b.clientCreatedAt).getTime()
+      ),
+    [messages]
+  );
 
+  /* ---- Soft input behavior (iOS + Android) ---- */
+// Soft input behavior
+useEffect(() => {
+  if (Platform.OS !== "android") return;
+
+  AvoidSoftInput.setEnabled(true);
+  AvoidSoftInput.setShouldMimicIOSBehavior(true);
+
+  return () => {
+    AvoidSoftInput.setEnabled(false);
+  };
+}, []);
+async function getReceiverTokenFromFirestore(userId: string): Promise<string | null> {
+  const uid = String(userId);
+  const docRef = firestore().collection("users").doc(uid);
+
+  const snap = await docRef.get();
+  if (!snap.exists) {
+    console.log("[FCM] doc missing:", uid);
+    return null;
+  }
+
+  const data = snap.data();
+  const tok = (data?.fcmToken ?? "").trim();
+
+  console.log("[FCM] Firestore token for", uid, "=", tok.slice(0, 25), "...");
+  return tok || null;
+}
+const SendNotification = async (
+  message: string,
+  title: string,
+  receiverId?: string,
+  receiverToken?: string | null,
+  type?: number,
+
+) => {
+  try {
+    const me = String(userprofile?.ID ?? "");
+    const rc = String(receiverId ?? "");
+    if (!rc || me === rc) {
+      return;
+    }
+    let tokenToUse
+
+    if (!tokenToUse) {
+      tokenToUse = await getReceiverTokenFromFirestore(rc);
+    }
+    
+    console.log("[SendNotification] using token =", tokenToUse?.slice(0, 25), "...");
+    
+    const payload = JSON.stringify({
+      UserTokens: tokenToUse,
+      message: message,
+      msgtitle: title,
+      User_PkeyID:  userprofile?.ID,
+      UserID: 0,
+      NTN_C_L: 3,
+    });
+    await sendchatnotify(payload);
+    
+    console.log("sendnotify",payload)
+  } catch (err) {
+  }
+};
   /* ---- Firebase sanity ---- */
   useEffect(() => {
     try {
@@ -194,8 +269,6 @@ console.log("othertoken",otherToken)
   }, []);
 
   /* ---- Hide tab bar while inside chat ---- */
-  const bottomPad = Math.max(insets.bottom, 20);
-
   useLayoutEffect(() => {
     navigation.getParent()?.setOptions({
       tabBarStyle: { display: "none" },
@@ -231,9 +304,7 @@ console.log("othertoken",otherToken)
       return;
     }
 
-    const chatDoc = firestore()
-      .collection("chatrooms")
-      .doc(docId);
+    const chatDoc = firestore().collection("chatrooms").doc(docId);
     const col = chatDoc.collection("messages");
     const query = col.orderBy("createdAt", "desc");
 
@@ -246,20 +317,12 @@ console.log("othertoken",otherToken)
           const x: any = d.data();
           return {
             ...x,
-            // ✅ normalize createdAt
-            createdAt: fixDate(
-              x.createdAt ?? x.clientCreatedAt
-            ),
+            createdAt: fixDate(x.createdAt ?? x.clientCreatedAt),
           } as Msg;
         });
         setMessages(rows);
       } catch (e: any) {
-        L(
-          "❌ initial load ERROR:",
-          e?.code,
-          e?.message,
-          e
-        );
+        L("❌ initial load ERROR:", e?.code, e?.message, e);
       }
 
       unsubscribe = query.onSnapshot(
@@ -268,10 +331,7 @@ console.log("othertoken",otherToken)
             const x: any = d.data();
             return {
               ...x,
-              // ✅ normalize createdAt in realtime updates too
-              createdAt: fixDate(
-                x.createdAt ?? x.clientCreatedAt
-              ),
+              createdAt: fixDate(x.createdAt ?? x.clientCreatedAt),
             } as Msg;
           });
           setMessages(rows);
@@ -283,23 +343,14 @@ console.log("othertoken",otherToken)
 
             snap.docs.forEach((d) => {
               const m = d.data() as any;
-              const mine =
-                m.sentBy === String(myUid);
+              const mine = m.sentBy === String(myUid);
               if (!mine) {
-                const delivered: string[] =
-                  Array.isArray(m.deliveredTo)
-                    ? m.deliveredTo
-                    : [];
-                if (
-                  !delivered.includes(
-                    String(myUid)
-                  )
-                ) {
+                const delivered: string[] = Array.isArray(m.deliveredTo)
+                  ? m.deliveredTo
+                  : [];
+                if (!delivered.includes(String(myUid))) {
                   batch.update(d.ref, {
-                    deliveredTo:
-                      firestore.FieldValue.arrayUnion(
-                        String(myUid)
-                      ),
+                    deliveredTo: firestore.FieldValue.arrayUnion(String(myUid)),
                   });
                   pending++;
                 }
@@ -309,13 +360,7 @@ console.log("othertoken",otherToken)
             if (pending) await batch.commit();
           } catch {}
         },
-        (err) =>
-          L(
-            "❌ live listener ERROR:",
-            err?.code,
-            err?.message,
-            err
-          )
+        (err) => L("❌ live listener ERROR:", err?.code, err?.message, err)
       );
     })();
 
@@ -323,12 +368,8 @@ console.log("othertoken",otherToken)
     chatDoc
       .set(
         {
-          send: [
-            String(myUid),
-            String(otherUid),
-          ],
-          updatedAt:
-            firestore.FieldValue.serverTimestamp(),
+          send: [String(myUid), String(otherUid)],
+          updatedAt: firestore.FieldValue.serverTimestamp(),
         },
         { merge: true }
       )
@@ -346,14 +387,9 @@ console.log("othertoken",otherToken)
   const markThreadRead = useCallback(async () => {
     if (!myUid || !otherUid) return;
     try {
-      const chatDoc = firestore()
-        .collection("chatrooms")
-        .doc(docId);
-      const listDoc = firestore()
-        .collection("messagelist")
-        .doc(docId);
+      const chatDoc = firestore().collection("chatrooms").doc(docId);
+      const listDoc = firestore().collection("messagelist").doc(docId);
 
-      // ✅ no where() → no composite index needed
       const snap = await chatDoc
         .collection("messages")
         .orderBy("createdAt", "desc")
@@ -364,18 +400,13 @@ console.log("othertoken",otherToken)
 
       snap.forEach((d) => {
         const m = d.data() as any;
-        const fromOther =
-          m.sentBy === String(otherUid);
+        const fromOther = m.sentBy === String(otherUid);
         const alreadyRead =
-          Array.isArray(m.readBy) &&
-          m.readBy.includes(String(myUid));
+          Array.isArray(m.readBy) && m.readBy.includes(String(myUid));
 
         if (fromOther && !alreadyRead) {
           batch.update(d.ref, {
-            readBy:
-              firestore.FieldValue.arrayUnion(
-                String(myUid)
-              ),
+            readBy: firestore.FieldValue.arrayUnion(String(myUid)),
           });
         }
       });
@@ -383,34 +414,25 @@ console.log("othertoken",otherToken)
       batch.set(
         listDoc,
         {
-          read: true,
-          [`lastRead.${myUid}`]:
-            firestore.FieldValue.serverTimestamp(),
+      
+          [`lastRead.${myUid}`]: firestore.FieldValue.serverTimestamp(),
           [`readMap.${myUid}`]: true,
         },
         { merge: true }
       );
 
-      // ✅ always commit
       await batch.commit();
     } catch (e: any) {
-      console.warn(
-        "markThreadRead error:",
-        e?.code,
-        e?.message
-      );
+      console.warn("markThreadRead error:", e?.code, e?.message);
     }
   }, [docId, myUid, otherUid]);
 
   // state for messagelist meta
-  const [peerLastRead, setPeerLastRead] =
-    useState<Date | null>(null);
+  const [peerLastRead, setPeerLastRead] = useState<Date | null>(null);
 
   useEffect(() => {
     if (!myUid || !otherUid) return;
-    const listDocRef = firestore()
-      .collection("messagelist")
-      .doc(docId);
+    const listDocRef = firestore().collection("messagelist").doc(docId);
     const unsub = listDocRef.onSnapshot((snap) => {
       const data: any = snap.data();
       const ts = data?.lastRead?.[otherUid];
@@ -425,38 +447,32 @@ console.log("othertoken",otherToken)
     return unsub;
   }, [docId, myUid, otherUid]);
 
-  useFocusEffect(
-    useCallback(() => {
-      const t = setTimeout(() => {
-        inputRef.current?.focus();
-      }, 150);
-      markThreadRead();
-      return () => clearTimeout(t);
-    }, [markThreadRead])
-  );
+  // useFocusEffect(
+  //   useCallback(() => {
+  //     // const t = setTimeout(() => {
+  //     //   inputRef.current?.focus();
+  //     // }, 150);
+  //     markThreadRead();
+  //     // return () => clearTimeout(t);
+  //   }, [markThreadRead])
+  // );
+  useEffect(() => {
+    markThreadRead();
+  }, [messages, markThreadRead]);
+  
 
 
 
   /* ---- Delete message ---- */
   const deleteMessage = async (msg: Msg) => {
-    const chatDoc = firestore()
-      .collection("chatrooms")
-      .doc(docId);
-    const msgRef = chatDoc
-      .collection("messages")
-      .doc(msg._id);
-    const listDoc = firestore()
-      .collection("messagelist")
-      .doc(docId);
+    const chatDoc = firestore().collection("chatrooms").doc(docId);
+    const msgRef = chatDoc.collection("messages").doc(msg._id);
+    const listDoc = firestore().collection("messagelist").doc(docId);
 
-    const wasNewest =
-      messages.length &&
-      messages[0]._id === msg._id;
+    const wasNewest = messages.length && messages[0]._id === msg._id;
 
     // optimistic
-    setMessages((prev) =>
-      prev.filter((m) => m._id !== msg._id)
-    );
+    setMessages((prev) => prev.filter((m) => m._id !== msg._id));
 
     try {
       await msgRef.delete();
@@ -468,8 +484,7 @@ console.log("othertoken",otherToken)
           .limit(1)
           .get();
 
-        const nextMsg = nextSnap.docs[0]
-          ?.data() as any | undefined;
+        const nextMsg = nextSnap.docs[0]?.data() as any | undefined;
         const nextLast = nextMsg?.text?.trim?.()
           ? nextMsg.text.trim()
           : nextMsg?.image
@@ -479,8 +494,7 @@ console.log("othertoken",otherToken)
         await listDoc.set(
           {
             lastmsg: nextLast,
-            updatedAt:
-              firestore.FieldValue.serverTimestamp(),
+            updatedAt: firestore.FieldValue.serverTimestamp(),
           },
           { merge: true }
         );
@@ -488,103 +502,36 @@ console.log("othertoken",otherToken)
     } catch (e: any) {
       // rollback
       setMessages((prev) => {
-        const exists = prev.some(
-          (m) => m._id === msg._id
-        );
+        const exists = prev.some((m) => m._id === msg._id);
         return exists ? prev : [msg, ...prev];
       });
-      Alert.alert(
-        "Delete failed",
-        e?.message || "Please try again."
-      );
+      Alert.alert("Delete failed", e?.message || "Please try again.");
     }
   };
 
   const confirmDelete = (msg: Msg) => {
     const mine = msg.sentBy === String(myUid);
     if (!mine) return;
-    Alert.alert(
-      "Delete message?",
-      "This removes the message for everyone.",
-      [
-        { text: "Cancel", style: "cancel" },
-        {
-          text: "Delete",
-          style: "destructive",
-          onPress: () => deleteMessage(msg),
-        },
-      ]
-    );
+    Alert.alert("Delete message?", "This removes the message for everyone.", [
+      { text: "Cancel", style: "cancel" },
+      {
+        text: "Delete",
+        style: "destructive",
+        onPress: () => deleteMessage(msg),
+      },
+    ]);
   };
-  async function getReceiverTokenFromFirestore(userId: string): Promise<string | null> {
-    const uid = String(userId);
-    const docRef = firestore().collection("users").doc(uid);
-  
-    const snap = await docRef.get();
-    if (!snap.exists) {
-      console.log("[FCM] doc missing:", uid);
-      return null;
-    }
-  
-    const data = snap.data();
-    const tok = (data?.fcmToken ?? "").trim();
-  
-    console.log("[FCM] Firestore token for", uid, "=", tok.slice(0, 25), "...");
-    return tok || null;
-  }
-  const SendNotification = async (
-    message: string,
-    title: string,
-    receiverId?: string,
-    receiverToken?: string | null,
-    type?: number,
-  
-  ) => {
-    try {
-      const me = String(userprofile?.ID ?? "");
-      const rc = String(receiverId ?? "");
-      if (!rc || me === rc) {
-        return;
-      }
-      let tokenToUse
-  
-      if (!tokenToUse) {
-        tokenToUse = await getReceiverTokenFromFirestore(rc);
-      }
-      
-      console.log("[SendNotification] using token =", tokenToUse?.slice(0, 25), "...");
-      
-      const payload = JSON.stringify({
-        UserTokens: tokenToUse,
-        message: message,
-        msgtitle: title,
-        User_PkeyID:  userprofile?.ID,
-        UserID: 0,
-        NTN_C_L: 3,
-      });
-      await sendchatnotify(payload);
-      
-      console.log("sendnotify",payload)
-    } catch (err) {
-    }
-  };
+
   /* ---- Sending helpers ---- */
-  const randomId = () =>
-    Math.random().toString(36).slice(2) +
-    Date.now().toString(36);
+  const randomId = () => Math.random().toString(36).slice(2) + Date.now().toString(36);
 
   const sendInternal = async (
-    payload:
-      | { kind: "text"; text: string }
-      | { kind: "image"; uri: string }
+    payload: { kind: "text"; text: string } | { kind: "image"; uri: string }
   ) => {
     const id = randomId();
     const now = new Date();
-    const isText =
-      (payload as any).kind === "text";
-    const lastText = isText
-      ? (payload as any).text.trim()
-      : "📷 Photo";
+    const isText = (payload as any).kind === "text";
+    const lastText = isText ? (payload as any).text.trim() : "📷 Photo";
 
     const baseUser = {
       _id: String(myUid),
@@ -597,7 +544,7 @@ console.log("othertoken",otherToken)
       ? {
           _id: id,
           text: (payload as any).text,
-          createdAt: now, // local date
+          createdAt: now,
           clientCreatedAt: now,
           sentBy: String(myUid),
           sentTo: String(otherUid),
@@ -618,57 +565,42 @@ console.log("othertoken",otherToken)
           readBy: [],
         };
 
-    // optimistic UI
+    // optimistic UI (newest first in raw array)
     setMessages((p) => [optimistic, ...p]);
+    justSentRef.current = true;
+    scrollToLatest(true);
 
-    const chatDoc = firestore()
-      .collection("chatrooms")
-      .doc(docId);
-    const msgRef = chatDoc
-      .collection("messages")
-      .doc(id);
-    const listDoc = firestore()
-      .collection("messagelist")
-      .doc(docId);
+    const chatDoc = firestore().collection("chatrooms").doc(docId);
+    const msgRef = chatDoc.collection("messages").doc(id);
+    const listDoc = firestore().collection("messagelist").doc(docId);
 
     const parentPayload = stripUndefined({
-      send: [
-        String(myUid),
-        String(otherUid),
-      ],
-      updatedAt:
-        firestore.FieldValue.serverTimestamp(),
+      send: [String(myUid), String(otherUid)],
+      updatedAt: firestore.FieldValue.serverTimestamp(),
     });
 
     const msgPayload = stripUndefined({
       ...optimistic,
-      createdAt:
-        firestore.FieldValue.serverTimestamp(),
+      createdAt: firestore.FieldValue.serverTimestamp(),
       clientCreatedAt: now,
     });
 
     const listPayload = stripUndefined({
-      send: [
-        String(myUid),
-        String(otherUid),
-      ],
+      send: [String(myUid), String(otherUid)],
       sentBy: String(myUid),
       sentTo: String(otherUid),
       senderusename: myName || "",
       reciverusename: otherName || "",
       senderavatar: myAvatar || "",
       reciveravatar: otherAvatar || "",
-      sendertoken:
-        userprofile?.User_Token_Val ?? null,
+      sendertoken: userprofile?.User_Token_Val ?? null,
       recivertoken: otherToken ?? null,
       senderuserid: safeNum(myUid),
       reciveruserid: safeNum(otherUid),
       lastmsg: lastText || "",
-      updatedAt:
-        firestore.FieldValue.serverTimestamp(),
-
+      updatedAt: firestore.FieldValue.serverTimestamp(),
       hasMessage: true,
-      read: false, // mark thread as unread for receiver
+      read: false,
       [`readMap.${myUid}`]: true,
       [`readMap.${otherUid}`]: false,
     });
@@ -698,14 +630,8 @@ await SendNotification(
 );
 
     } catch (e: any) {
-      // rollback optimistic
-      setMessages((p) =>
-        p.filter((m) => m._id !== id)
-      );
-      Alert.alert(
-        "Send failed",
-        e?.message || "Please try again."
-      );
+      setMessages((p) => p.filter((m) => m._id !== id));
+      Alert.alert("Send failed", e?.message || "Please try again.");
     } finally {
       setSending(false);
     }
@@ -713,11 +639,116 @@ await SendNotification(
 
   const sendText = async () => {
     const text = composer.trim();
-    if (!text || !myUid || !otherUid) return;
-    setComposer(""); // keep focus
+    if (!text || sending) return;
+  
+    setComposer("");
+    Keyboard.dismiss(); // ✅ dismiss
+  
     await sendInternal({ kind: "text", text });
+    setTimeout(() => scrollToLatest(true), 80);
+  };
+  
+  
+
+  /* ---- Report / Block ---- */
+  const reportUser = async (reason: string) => {
+    if (!reason.trim()) return;
+    try {
+      await firestore().collection("reports").add({
+        type: "user",
+        reporterId: myUid || null,
+        reportedUserId: otherUid || null,
+        chatId: docId,
+        reason: reason.trim(),
+        createdAt: firestore.FieldValue.serverTimestamp(),
+      });
+      Alert.alert("Report sent", "Thanks for helping keep the community safe.");
+    } catch (e: any) {
+      Alert.alert("Error", e?.message || "Could not send report. Please try again.");
+    }
   };
 
+  const blockUser = async () => {
+    try {
+      await firestore()
+        .collection("blockedUsers")
+        .doc(String(myUid))
+        .set(
+          {
+            [otherUid]: true,
+            updatedAt: firestore.FieldValue.serverTimestamp(),
+          },
+          { merge: true }
+        );
+      Alert.alert("User blocked", "You won't receive messages from this user.");
+    } catch (e: any) {
+      Alert.alert("Error", e?.message || "Could not block user. Please try again.");
+    }
+  };
+
+  const openMoreMenu = () => {
+    console.log("[Chat] more menu pressed");
+
+    if (Platform.OS === "ios") {
+      ActionSheetIOS.showActionSheetWithOptions(
+        {
+          title: otherName,
+          message: "Chat options",
+          options: ["Report user", "Block user", "Cancel"],
+          destructiveButtonIndex: 1,
+          cancelButtonIndex: 2,
+        },
+        (index) => {
+          if (index === 0) {
+            // Report
+            ActionSheetIOS.showActionSheetWithOptions(
+              {
+                title: "Report user",
+                message: "Why are you reporting this user?",
+                options: [
+                  "Spam",
+                  "Abusive / hateful content",
+                  "Inappropriate content",
+                  "Cancel",
+                ],
+                cancelButtonIndex: 3,
+              },
+              (i) => {
+                if (i === 0) reportUser("Spam");
+                if (i === 1) reportUser("Abusive / hateful content");
+                if (i === 2) reportUser("Inappropriate content");
+              }
+            );
+          } else if (index === 1) {
+            blockUser();
+          }
+        }
+      );
+    } else {
+      Alert.alert("Chat options", `@${otherName}`, [
+        {
+          text: "Report user",
+          onPress: () =>
+            Alert.alert("Report user", "Why are you reporting this user?", [
+              { text: "Spam", onPress: () => reportUser("Spam") },
+              {
+                text: "Abusive / hateful content",
+                onPress: () => reportUser("Abusive / hateful content"),
+              },
+              {
+                text: "Inappropriate content",
+                onPress: () => reportUser("Inappropriate content"),
+              },
+              { text: "Cancel", style: "cancel" },
+            ]),
+        },
+        { text: "Block user", style: "destructive", onPress: blockUser },
+        { text: "Cancel", style: "cancel" },
+      ]);
+    }
+  };
+
+  /* ---- Media ---- */
   const pickFromGallery = async () => {
     try {
       const res = await ImagePicker.openPicker({
@@ -733,8 +764,7 @@ await SendNotification(
         type: res.mime,
         uri: res.path,
       } as any;
-      const uploaded: any =
-        await uploaddocumnetaws(file);
+      const uploaded: any = await uploaddocumnetaws(file);
       if (uploaded?.location)
         await sendInternal({
           kind: "image",
@@ -757,8 +787,7 @@ await SendNotification(
         type: res.mime,
         uri: res.path,
       } as any;
-      const uploaded: any =
-        await uploaddocumnetaws(file);
+      const uploaded: any = await uploaddocumnetaws(file);
       if (uploaded?.location)
         await sendInternal({
           kind: "image",
@@ -770,41 +799,22 @@ await SendNotification(
   const getTickState = (m: Msg) => {
     const mine = m.sentBy === String(myUid);
     const delivered =
-      Array.isArray(m.deliveredTo) &&
-      m.deliveredTo.includes(String(otherUid));
+      Array.isArray(m.deliveredTo) && m.deliveredTo.includes(String(otherUid));
     const read =
-      Array.isArray(m.readBy) &&
-      m.readBy.includes(String(otherUid));
+      Array.isArray(m.readBy) && m.readBy.includes(String(otherUid));
 
     if (read) return "read";
 
-    // Fallback: if the other user’s lastRead timestamp is after this message's time,
-    // we treat it as read (even if per-message readBy hasn't synced yet)
-    if (
-      mine &&
-      peerLastRead &&
-      (m.createdAt || m.clientCreatedAt)
-    ) {
-      const msgTime = (
-        m.createdAt || m.clientCreatedAt
-      ).getTime();
-      if (peerLastRead.getTime() >= msgTime)
-        return "read";
+    if (mine && peerLastRead && (m.createdAt || m.clientCreatedAt)) {
+      const msgTime = (m.createdAt || m.clientCreatedAt).getTime();
+      if (peerLastRead.getTime() >= msgTime) return "read";
     }
 
     return delivered ? "delivered" : "sent";
   };
 
-  const Tick = ({
-    state,
-  }: {
-    state: "sent" | "delivered" | "read";
-  }) => {
-    const color =
-      state === "read"
-        ? "#50B0FF"
-        : "#A6A7B1";
-    // single ✔ for "sent", double ✔✔ for "delivered/read"
+  const Tick = ({ state }: { state: "sent" | "delivered" | "read" }) => {
+    const color = state === "read" ? "#50B0FF" : "#A6A7B1";
     return (
       <View
         style={{
@@ -814,11 +824,7 @@ await SendNotification(
           marginLeft: 6,
         }}
       >
-        <Feather
-          name="check"
-          size={14}
-          color={color}
-        />
+        <Feather name="check" size={14} color={color} />
         {state !== "sent" && (
           <Feather
             name="check"
@@ -833,49 +839,35 @@ await SendNotification(
 
   /* ---- Render row ---- */
   const renderItem = ({ item }: { item: Msg }) => {
-    const mine =
-      item.sentBy === String(myUid);
-    const ts = fixDate(
-      item.createdAt || item.clientCreatedAt
-    ); // ✅ always valid
-    const tickState = mine
-      ? getTickState(item)
-      : null;
+    const mine = item.sentBy === String(myUid);
+    const ts = fixDate(item.createdAt || item.clientCreatedAt);
+    const tickState = mine ? getTickState(item) : null;
 
     return (
       <View
         style={[
           styles.row,
           {
-            justifyContent: mine
-              ? "flex-end"
-              : "flex-start",
+            justifyContent: mine ? "flex-end" : "flex-start",
           },
         ]}
       >
         {!mine && (
-          <Image
-            source={{ uri: otherAvatar }}
-            style={styles.smallAvatar}
-          />
+          <Image source={{ uri: otherAvatar }} style={styles.smallAvatar} />
         )}
 
         <TouchableOpacity
           style={[
             styles.bubble,
             {
-              backgroundColor: mine
-                ? COLORS.me
-                : COLORS.card,
+              backgroundColor: mine ? COLORS.me : COLORS.card,
             },
           ]}
-          onLongPress={() =>
-            confirmDelete(item)
-          }
+          onLongPress={() => confirmDelete(item)}
           delayLongPress={300}
           activeOpacity={0.8}
         >
-          {item.text ? (
+         {item.text ? (
             <Text style={styles.msgText}>
               {item.text}
             </Text>
@@ -895,309 +887,188 @@ await SendNotification(
                 minute: "2-digit",
               })}
             </Text>
-            {tickState && (
-              <Tick state={tickState} />
-            )}
+            {tickState && <Tick state={tickState} />}
           </View>
         </TouchableOpacity>
       </View>
     );
   };
+  const atBottomRef = useRef(true);
+  const justSentRef = useRef(false);
 
+  const scrollToLatest = (animated = true) => {
+    // inverted list => latest at offset 0
+    requestAnimationFrame(() => {
+      listRef.current?.scrollToOffset({ offset: 0, animated });
+    });
+  
+    // iOS sometimes needs 2nd tick after layout settles
+    setTimeout(() => {
+      listRef.current?.scrollToOffset({ offset: 0, animated });
+    }, 50);
+  };
+  
+  const scrollToBottom = (animated = true) =>
+    listRef.current?.scrollToOffset?.({ offset: 0, animated });
+  useEffect(() => {
+    if (justSentRef.current) {
+      justSentRef.current = false;
+      scrollToLatest(true);
+      return;
+    }
+  
+    // normal behavior: only auto-scroll if user already at bottom
+    if (atBottomRef.current) {
+      scrollToLatest(false);
+    }
+  }, [messages.length]);
+  const [showNewMsgIndicator, setShowNewMsgIndicator] = useState(false);
+
+  
+  
   /* ---- UI ---- */
   const ready = !!myUid && !!otherUid;
-  const listBottomPad =
-    COMPOSER_H +
-    Math.max(insets.bottom, 16) +
-    EXTRA_GAP;
+  const chatBody = ready ? (
+    <>
+     <FlatList
+  ref={listRef}
+  style={{ flex: 1 }}
+  inverted
+  data={messages} // ✅ newest-first array
+  keyExtractor={(m) => m._id}
+  renderItem={renderItem}
+  keyboardShouldPersistTaps="always"
+  keyboardDismissMode={Platform.OS === "ios" ? "interactive" : "on-drag"}
+  contentContainerStyle={{
+    paddingTop: 8,
+    paddingHorizontal: 12,
+    paddingBottom: 8,
+  }}
+  onContentSizeChange={() => {
+    if (atBottomRef.current || justSentRef.current) {
+      scrollToLatest(false);
+    }
+  }}
+  
+  onScroll={(e) => {
+    // In inverted list: contentOffset.y close to 0 means you're at bottom (latest)
+    const y = e.nativeEvent.contentOffset.y;
+    atBottomRef.current = y < 40;
+  }}
+  scrollEventThrottle={16}
+  maintainVisibleContentPosition={{ minIndexForVisible: 0 }} // ✅ helps on iOS
+  ListEmptyComponent={
+    <View style={{ alignItems: "center", paddingTop: 80 }}>
+      <Text style={{ color: COLORS.sub }}>No messages yet. Say hi 👋</Text>
+    </View>
+  }
+/>
+
+      {/* Composer */}
+      <View
+        style={[
+          styles.composerBar,
+          {
+            // only safe-area here; no extra margin
+            paddingBottom: 10
+          },
+        ]}
+      >
+        <TouchableOpacity
+          onPress={pickFromGallery}
+          style={styles.mediaBtn}
+        >
+          <Feather name="image" size={20} color={COLORS.primary} />
+        </TouchableOpacity>
+
+        <TouchableOpacity
+          onPress={openCamera}
+          style={[styles.mediaBtn, { marginLeft: 10 }]}
+        >
+          <Feather name="camera" size={20} color={COLORS.primary} />
+        </TouchableOpacity>
+
+        <View style={styles.inputPill}>
+          <TextInput
+            ref={inputRef}
+            value={composer}
+            onChangeText={setComposer}
+            placeholder="Type a message"
+            placeholderTextColor={COLORS.sub}
+            style={styles.input}
+            multiline
+            blurOnSubmit={false}
+            onFocus={() => requestAnimationFrame(() => {
+              scrollToBottom(true);
+            
+            })}
+
+            onSubmitEditing={
+              Platform.OS === "ios" ? undefined : sendText
+            }
+            returnKeyType="send"
+          />
+        </View>
+
+        <TouchableOpacity
+          onPress={sendText}
+          style={styles.sendFab}
+          activeOpacity={0.9}
+          disabled={sending}
+        >
+          <Feather name="send" size={20} color="#fff" />
+        </TouchableOpacity>
+      </View>
+    </>
+  ) : (
+    <View
+      style={{
+        flex: 1,
+        alignItems: "center",
+        justifyContent: "center",
+      }}
+    >
+      <Text
+        style={{
+          color: COLORS.sub,
+          paddingHorizontal: 24,
+          textAlign: "center",
+        }}
+      >
+        Loading profile… Waiting for myUid/otherUid
+      </Text>
+    </View>
+  );
 
   return (
     <SafeAreaView style={styles.screen}>
-      <StatusBar
-        barStyle="light-content"
-        backgroundColor={COLORS.bg}
-      />
+      <StatusBar barStyle="light-content" backgroundColor={COLORS.bg} />
 
-      {/* fixed header */}
-      <View style={{ height: HEADER_FIXED_H }}>
+      <View style={{ flex: 1 }}>
+        {/* HEADER ALWAYS VISIBLE */}
         <Header
           title={otherName}
           avatar={otherAvatar}
           onBack={() => navigation.goBack()}
           topInset={insets.top}
+          onMorePress={openMoreMenu}
         />
-      </View>
 
-      {/* chat area */}
-      <View
-        style={{
-          height: "95%",
-          overflow: "hidden",
-        }}
-      >
-        {ready ? (
-          isIOS ? (
-            <KeyboardAvoidingView
-              style={{ flex: 1 }}
-              behavior="padding"
-              keyboardVerticalOffset={
-                HEADER_FIXED_H
-              }
-            >
-              <FlatList
-                ref={listRef}
-                style={{ flex: 1 }}
-                contentContainerStyle={{
-                  paddingTop: 8,
-                  paddingHorizontal: 12,
-                  paddingBottom:
-                    listBottomPad,
-                }}
-                data={messages}
-                keyExtractor={(m) => m._id}
-                renderItem={renderItem}
-                inverted
-                keyboardShouldPersistTaps="always"
-                keyboardDismissMode="interactive"
-                onContentSizeChange={() =>
-                  listRef.current?.scrollToOffset?.({
-                    offset: 0,
-                    animated: true,
-                  })
-                }
-                ListEmptyComponent={
-                  <View
-                    style={{
-                      alignItems: "center",
-                      paddingTop: 80,
-                    }}
-                  >
-                    <Text
-                      style={{
-                        color: COLORS.sub,
-                      }}
-                    >
-                      No messages yet. Say hi 👋
-                    </Text>
-                  </View>
-                }
-              />
+        {/* CHAT BODY: moves with keyboard */}
+        {Platform.OS === "ios" ? (
+  <KeyboardAvoidingView
+  style={{ flex: 1 }}
+  // behavior="padding"
+  // keyboardVerticalOffset={insets.top + 56} 
+  >
+    {chatBody}
+  </KeyboardAvoidingView>
+) : (
+  <AvoidSoftInputView style={{ flex: 1 }} avoidOffset={EXTRA_GAP}>
+    {chatBody}
+  </AvoidSoftInputView>
+)}
 
-              {/* Composer */}
-              <View
-                style={[
-                  styles.composerBar,
-                  {
-                    paddingBottom:
-                      Math.max(
-                        insets.bottom,
-                        8
-                      ),
-                  },
-                ]}
-              >
-                <TouchableOpacity
-                  onPress={pickFromGallery}
-                  style={styles.mediaBtn}
-                >
-                  <Feather
-                    name="image"
-                    size={20}
-                    color={COLORS.primary}
-                  />
-                </TouchableOpacity>
-                <TouchableOpacity
-                  onPress={openCamera}
-                  style={[
-                    styles.mediaBtn,
-                    { marginLeft: 10 },
-                  ]}
-                >
-                  <Feather
-                    name="camera"
-                    size={20}
-                    color={COLORS.primary}
-                  />
-                </TouchableOpacity>
-
-                <View style={styles.inputPill}>
-                  <TextInput
-                    ref={inputRef}
-                    value={composer}
-                    onChangeText={setComposer}
-                    placeholder="Type a message"
-                    placeholderTextColor={
-                      COLORS.sub
-                    }
-                    style={styles.input}
-                    multiline
-                    blurOnSubmit={false}
-                    onFocus={() =>
-                      listRef.current?.scrollToOffset?.(
-                        {
-                          offset: 0,
-                          animated: true,
-                        }
-                      )
-                    }
-                  />
-                </View>
-
-                <TouchableOpacity
-                  onPress={sendText}
-                  style={styles.sendFab}
-                  activeOpacity={0.9}
-                  disabled={sending}
-                >
-                  <Feather
-                    name="send"
-                    size={20}
-                    color="#fff"
-                  />
-                </TouchableOpacity>
-              </View>
-            </KeyboardAvoidingView>
-          ) : (
-            <AvoidSoftInputView
-              style={{ flex: 1 }}
-              avoidOffset={EXTRA_GAP}
-            >
-              <FlatList
-                ref={listRef}
-                style={{ flex: 1 }}
-                contentContainerStyle={{
-                  paddingTop: 8,
-                  paddingHorizontal: 12,
-                  paddingBottom:
-                    listBottomPad,
-                }}
-                data={messages}
-                keyExtractor={(m) => m._id}
-                renderItem={renderItem}
-                inverted
-                keyboardShouldPersistTaps="always"
-                keyboardDismissMode="on-drag"
-                onContentSizeChange={() =>
-                  listRef.current?.scrollToOffset?.({
-                    offset: 0,
-                    animated: true,
-                  })
-                }
-                ListEmptyComponent={
-                  <View
-                    style={{
-                      alignItems: "center",
-                      paddingTop: 80,
-                    }}
-                  >
-                    <Text
-                      style={{
-                        color: COLORS.sub,
-                      }}
-                    >
-                      No messages yet. Say hi 👋
-                    </Text>
-                  </View>
-                }
-              />
-
-              <View
-                style={[
-                  styles.composerBar,
-                  {
-                    paddingBottom: Math.max(
-                      insets.bottom +
-                        EXTRA_GAP,
-                      14
-                    ),
-                  },
-                ]}
-              >
-                <TouchableOpacity
-                  onPress={pickFromGallery}
-                  style={styles.mediaBtn}
-                >
-                  <Feather
-                    name="image"
-                    size={20}
-                    color={COLORS.primary}
-                  />
-                </TouchableOpacity>
-                <TouchableOpacity
-                  onPress={openCamera}
-                  style={[
-                    styles.mediaBtn,
-                    { marginLeft: 10 },
-                  ]}
-                >
-                  <Feather
-                    name="camera"
-                    size={20}
-                    color={COLORS.primary}
-                  />
-                </TouchableOpacity>
-
-                <View style={styles.inputPill}>
-                  <TextInput
-                    ref={inputRef}
-                    value={composer}
-                    onChangeText={setComposer}
-                    placeholder="Type a message"
-                    placeholderTextColor={
-                      COLORS.sub
-                    }
-                    style={styles.input}
-                    multiline
-                    blurOnSubmit={false}
-                    onFocus={() =>
-                      listRef.current?.scrollToOffset?.(
-                        {
-                          offset: 0,
-                          animated: true,
-                        }
-                      )
-                    }
-                    onSubmitEditing={sendText}
-                    returnKeyType="send"
-                  />
-                </View>
-
-                <TouchableOpacity
-                  onPress={sendText}
-                  style={styles.sendFab}
-                  activeOpacity={0.9}
-                  disabled={sending}
-                >
-                  <Feather
-                    name="send"
-                    size={20}
-                    color="#fff"
-                  />
-                </TouchableOpacity>
-              </View>
-            </AvoidSoftInputView>
-          )
-        ) : (
-          <View
-            style={{
-              flex: 1,
-              alignItems: "center",
-              justifyContent: "center",
-            }}
-          >
-            <Text
-              style={{
-                color: COLORS.sub,
-                paddingHorizontal: 24,
-                textAlign: "center",
-              }}
-            >
-              Loading profile… Waiting for
-              myUid/otherUid
-            </Text>
-          </View>
-        )}
-        <View style={{ height: 10 }} />
       </View>
     </SafeAreaView>
   );
@@ -1234,7 +1105,7 @@ const styles = StyleSheet.create({
 
   row: {
     flexDirection: "row",
-    marginVertical: 6,
+     marginVertical: 6,
   },
   smallAvatar: {
     width: 24,
@@ -1277,12 +1148,12 @@ const styles = StyleSheet.create({
     flexDirection: "row",
     alignItems: "flex-end",
     paddingTop: 8,
-    marginBottom: 10,
     paddingHorizontal: 12,
     backgroundColor: COLORS.bg,
     borderTopWidth: StyleSheet.hairlineWidth,
     borderTopColor: COLORS.line,
   },
+  
   mediaBtn: {
     height: 44,
     width: 44,

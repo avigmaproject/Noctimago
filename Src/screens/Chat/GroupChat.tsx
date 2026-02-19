@@ -44,7 +44,6 @@ type GroupDoc = {
   avatar?: string;
   members: string[];
   updatedAt?: any;
-  updatedMs?: number;  
   lastmsg?: string;
   lastSentBy?: string;
   reads?: Record<string, any>;
@@ -116,26 +115,7 @@ export default function GroupChat({ navigation, route }: any) {
     userprofile?.User_Firebase_UID ??
     ''
   );
-  const myIdCandidates = useMemo(() => {
-    const u = userprofile || {};
-    return [
-      u?.ID,
-      u?.user?.id,
-      u?.User_PkeyID,
-      u?.User_Firebase_UID,
-      String(u?.ID ?? ""),
-      String(u?.user?.id ?? ""),
-      String(u?.User_PkeyID ?? ""),
-      String(u?.User_Firebase_UID ?? ""),
-    ].map(x => String(x || "")).filter(Boolean);
-  }, [userprofile]);
-  
-  const myGroupKey = useMemo(() => {
-    // group.members me jo id match kare, wahi use karo
-    const mem = (group?.members || []).map(String);
-    return myIdCandidates.find(k => mem.includes(k)) || myUid; // fallback
-  }, [group?.members, myIdCandidates, myUid]);
-  
+
   const myName = userprofile?.display_name ?? userprofile?.username ?? 'Me';
   const myAvatar = userprofile?.meta?.profile_image || userprofile?.User_Image_Path || DUMMY_AVATAR;
 
@@ -158,22 +138,15 @@ export default function GroupChat({ navigation, route }: any) {
   const groupDoc = useMemo(() => db.collection('groups').doc(groupId), [db, groupId]);
   const msgCol = useMemo(() => groupDoc.collection('messages'), [groupDoc]);
 // --- Read markers ---
-// console.log("[GroupChat KEY]", { myUid, myIdCandidates, myGroupKey, groupReadsKeys: Object.keys(group.reads || {}), groupReadsMsKeys: Object.keys(group.readsMs || {}) });
-
 const markRead = useCallback(() => {
-  if (!myGroupKey) return;
-  const now = Math.max(Date.now(), Number(group?.updatedMs || 0));
-
-
+  if (!myUid) return;
+  const now = Date.now();
   groupDoc.set({
-    [`reads.${myGroupKey}`]: firestore.FieldValue.serverTimestamp(),
-    [`readsMs.${myGroupKey}`]: now,
-    [`wm.${myGroupKey}`]: now,
-  }, { merge: true })
-  .catch(err => console.warn("[markRead] FAIL", err?.code, err?.message));
-}, [groupDoc, myGroupKey, group?.updatedMs]);
-
-
+    [`reads.${myUid}`]: firestore.FieldValue.serverTimestamp(),
+    [`readsMs.${myUid}`]: now,
+    [`wm.${myUid}`]: now,
+  }, { merge: true }).catch(err => console.warn("[markRead] FAIL", err?.code, err?.message));
+}, [groupDoc, myUid]);
 
 useFocusEffect(useCallback(() => {
   markRead();
@@ -184,28 +157,6 @@ useFocusEffect(useCallback(() => {
 useEffect(() => {
   return () => { markRead(); };
 }, [markRead]);
-const getGroupTokens = async (members: string[], myUid: string) => {
-  if (!members?.length) return [];
-
-  const snaps = await Promise.all(
-    members
-      .filter(uid => String(uid) !== String(myUid)) // ❌ no self notification
-      .map(uid =>
-        firestore()
-          .collection("users")
-          .doc(String(uid))
-          .get()
-      )
-  );
-
-  const tokens = snaps
-    .map(s => s.data()?.fcmToken)
-    .filter(Boolean);
-
-  console.log("🔍 [getGroupTokens]", tokens.length, "tokens found");
-
-  return tokens;
-};
 
   /* ----------------- Header (tap to settings) -------------- */
 /* ----------------- Header (tap to settings) -------------- */
@@ -226,8 +177,7 @@ useEffect(() => {
         <Feather name="chevron-left" size={24} color="#fff" />
       </TouchableOpacity>
     ),
- 
-    
+
     headerTitle: () => (
       <TouchableOpacity
         activeOpacity={0.8}
@@ -278,7 +228,6 @@ useEffect(() => {
             avatar: data.avatar ?? g.avatar,
             members: Array.isArray(data.members) ? data.members.map(String) : g.members,
             updatedAt: data.updatedAt,
-            updatedMs: Number(data.updatedMs || 0),
             lastmsg: data.lastmsg,
             lastSentBy: data.lastSentBy,
             reads: data.reads || g.reads,
@@ -328,7 +277,28 @@ useEffect(() => {
 
   /* ------------------------------ Send ------------------------------------ */
   const randomId = () => Math.random().toString(36).slice(2) + Date.now().toString(36);
-
+  const getGroupTokens = async (members: string[], myUid: string) => {
+    if (!members?.length) return [];
+  
+    const snaps = await Promise.all(
+      members
+        .filter(uid => String(uid) !== String(myUid)) // ❌ no self notification
+        .map(uid =>
+          firestore()
+            .collection("users")
+            .doc(String(uid))
+            .get()
+        )
+    );
+  
+    const tokens = snaps
+      .map(s => s.data()?.fcmToken)
+      .filter(Boolean);
+  
+    console.log("🔍 [getGroupTokens]", tokens.length, "tokens found");
+  
+    return tokens;
+  };
   const sendInternal = async (payload: { kind: 'text'; text: string } | { kind: 'image'; uri: string }) => {
     if (!myUid) return;
     const id = randomId();
@@ -393,7 +363,7 @@ useEffect(() => {
             msgtitle: group.name,
             User_PkeyID: myUid,
             UserID: 0,
-            NTN_C_L: 1,
+            NTN_C_L: 3,
           };
       
           console.log("📦 [GROUP_PUSH] notifPayload ready", {
@@ -421,10 +391,6 @@ useEffect(() => {
       } catch (e: any) {
         console.log("💥 [GROUP_PUSH] Exception:", e?.message, e?.stack);
       }
-      
-      
-      
-      // optionally mark myself read (I obviously saw my own message)
       markRead();
     } catch (e: any) {
       setMessages(p => p.filter(m => m._id !== id));

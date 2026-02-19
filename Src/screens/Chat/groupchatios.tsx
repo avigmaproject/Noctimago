@@ -11,10 +11,12 @@ import Feather from 'react-native-vector-icons/Feather';
 import ImagePicker from 'react-native-image-crop-picker';
 import firestore from '@react-native-firebase/firestore';
 import { useSelector } from 'react-redux';
-import { uploaddocumnetaws } from '../../utils/Awsfile';
+// REVIEW: switched from AWS helper to new cloud upload utility
+import { uploadDocument } from '../../utils/CloudUpload';
 import { AvoidSoftInput, AvoidSoftInputView } from 'react-native-avoid-softinput';
 import Avatar from "../../utils/Avatar";
 import { sendchatnotify } from '../../utils/apiconfig';
+import ZoomableChatImage from '../../components/ZoomableChatImage';
 const COLORS = { bg:'#0B0B12', card:'#15151F', me:'rgba(82,68,171,0.18)', text:'#EDEDF4', sub:'#9A9AA5', line:'rgba(255,255,255,0.08)', primary:'#F44336',  border:'#1F2127' };
 const DUMMY_AVATAR = 'https://i.pravatar.cc/150?img=1';
 const DEFAULT_GROUP_AVATAR = 'https://upload.wikimedia.org/wikipedia/commons/thumb/b/bc/Unknown_person.jpg/1200px-Unknown_person.jpg';
@@ -430,8 +432,9 @@ useEffect(() => {
   const sendImage = async (uri: string) => {
     try {
       const file = { name: `${Date.now()}-${myUid}`, size: 0, type: 'image/jpeg', uri } as any;
-      const uploaded: any = await uploaddocumnetaws(file);
-      if (uploaded?.location) await sendInternal({ kind: 'image', uri: uploaded.location });
+      // REVIEW: uploadDocument returns URL string directly
+      const uploadedUrl: any = await uploadDocument(file);
+      if (uploadedUrl) await sendInternal({ kind: 'image', uri: uploadedUrl });
     } catch {
       Alert.alert('Upload failed');
     }
@@ -597,7 +600,8 @@ useEffect(() => {
               {item.text ? (
                 <Text style={styles.msgText}>{item.text}</Text>
               ) : (
-                <Image source={{ uri: item.image }} style={styles.msgImage} />
+                <ZoomableChatImage uri={item.image} style={styles.msgImage} />
+                // <Image source={{ uri: item.image }} style={styles.msgImage} />
               )}
               <Text style={styles.time}>{timeText}</Text>
               <SeenRow msg={item} />

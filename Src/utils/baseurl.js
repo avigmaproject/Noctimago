@@ -17,9 +17,10 @@ export const API = {
   ALL_USER:BASE_URL+'users',
   UN_FRIEND:BASE_URL+'unfriend',
   GOOGLE_SIGNIN:BASE_URL+'login',
-  SEND_NOTIFICATION:'https://napi.nearbuy.space/api/NoctimagoApi/sendNotification',
-  GET_NOTIFICATION:'https://napi.nearbuy.space/api/NoctimagoApi/GetUserNotification',
-  READ_NOTIFICATION:'https://napi.nearbuy.space/api/NoctimagoApi/CreateUpdateUserNotification'
+  SEND_NOTIFICATION:'https://apinotimagonot.ikaart.in/api/NoctimagoApi/sendNotification',
+  GET_NOTIFICATION:'https://apinotimagonot.ikaart.in/api/NoctimagoApi/GetUserNotification',
+  READ_NOTIFICATION:'https://apinotimagonot.ikaart.in/api/NoctimagoApi/CreateUpdateUserNotification',
+  SEND_NOTIFICATIONCHAT:"https://apinotimagonot.ikaart.in/api/NoctimagoApi/sendNotificationMultiple"
 };
 
 // node_modules/react-native-paper/src/components/TextInput/Label/InputLabel.tsx changes on line number 157 color property

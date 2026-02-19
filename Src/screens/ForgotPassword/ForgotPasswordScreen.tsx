@@ -7,9 +7,13 @@ import {
   StyleSheet, 
   Image,
   ActivityIndicator,
-  Alert
+  KeyboardAvoidingView,
+  Alert,
+  Platform,
+  ScrollView
 } from "react-native";
 import Icon from "react-native-vector-icons/Feather"; 
+import { AvoidSoftInputView } from "react-native-avoid-softinput";
 import { forgotpassword } from "../../utils/apiconfig";
 
 export default function ForgotPasswordScreen({ navigation }) {
@@ -55,7 +59,15 @@ export default function ForgotPasswordScreen({ navigation }) {
   
 
   return (
-    <View style={styles.container}>
+    <View  style={{flex:1}}>
+       <AvoidSoftInputView
+    style={styles.container}
+       
+       
+      >
+        
+      
+
       {/* Lock Icon */}
       <View style={styles.iconContainer}>
         <Image
@@ -107,7 +119,8 @@ export default function ForgotPasswordScreen({ navigation }) {
       <TouchableOpacity onPress={() => navigation.goBack()} disabled={loading}>
         <Text style={styles.backText}>Back to Sign In</Text>
       </TouchableOpacity>
-    </View>
+      </AvoidSoftInputView>
+      </View>
   );
 }
 

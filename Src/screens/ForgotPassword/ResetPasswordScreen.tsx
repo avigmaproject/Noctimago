@@ -9,6 +9,7 @@ import {
   Alert 
 } from "react-native";
 import { resetpassword } from "../../utils/apiconfig";
+import { AvoidSoftInputView } from "react-native-avoid-softinput";
 export default function ResetPasswordScreen({ route, navigation }) {
   const { key, login } = route.params || {};  // use "key" instead of "token"
   const [password, setPassword] = useState("");
@@ -72,8 +73,12 @@ export default function ResetPasswordScreen({ route, navigation }) {
   
 
   return (
-    <View style={styles.container}>
-      {/* Logo / Lock Icon */}
+    <View style={{flex:1}}>
+  <AvoidSoftInputView
+    style={styles.container}
+       
+       
+      >
       <View style={styles.iconContainer}>
         <Image
           source={require("../../assets/lock.png")}
@@ -122,7 +127,7 @@ export default function ResetPasswordScreen({ route, navigation }) {
       <TouchableOpacity onPress={() => navigation.navigate("SignIn")}>
         <Text style={styles.backText}>Back to Sign In</Text>
       </TouchableOpacity>
-    </View>
+  </AvoidSoftInputView>  </View>
   );
 }
 

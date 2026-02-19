@@ -30,6 +30,14 @@
           }
         },
         {
+          "client_id": "406896981733-pkobb8sgiumfh0u7lol5296b27e0a41q.apps.googleusercontent.com",
+          "client_type": 1,
+          "android_info": {
+            "package_name": "com.noctimago",
+            "certificate_hash": "5e951ec7d3305d08d36a821a2c3e0aa8a38c20ab"
+          }
+        },
+        {
           "client_id": "406896981733-hakhrb4g0ad78lq8n010b8oduvlr8ioo.apps.googleusercontent.com",
           "client_type": 3
         }

@@ -20,6 +20,7 @@ import {
   AdEventType,
   TestIds
 } from "react-native-google-mobile-ads";
+import { BANNER_AD_ID, INTERSTITIAL_AD_ID } from "../../ads/ids";
 import { useIsFocused, useFocusEffect, useNavigation } from "@react-navigation/native";
 const COLORS = {
   bg:"#0B0B12", card:"#16161C", elev:"#1B1C24", text:"#FFFFFF",
@@ -92,12 +93,16 @@ const encodeEmojiToCurlyUnicode = (text: string) =>
       .then(() => mobileAds().initialize())
       .then(() => console.log("AdMob initialized"));
   }, []);
-  const bannerAdId = __DEV__ ? TestIds.BANNER : "ca-app-pub-2847186072494111/8751364810";
+  // bannerAdId defined above using shared ids
 
-  const INTERSTITIAL_UNIT_ID = __DEV__
-    ? TestIds.INTERSTITIAL
-    : "ca-app-pub-2847186072494111/8751364810"; // your real id
-  
+  // const INTERSTITIAL_UNIT_ID = __DEV__
+  //   ? TestIds.INTERSTITIAL
+  //   : "ca-app-pub-2847186072494111/5687551304"; // your real id
+  const bannerAdId = BANNER_AD_ID;
+  const INTERSTITIAL_UNIT_ID = INTERSTITIAL_AD_ID;
+  // const INTERSTITIAL_UNIT_ID = __DEV__
+  // ? TestIds.INTERSTITIAL
+  // : "ca-app-pub-2847186072494111/6482385544";
   const interstitialRef = useRef<InterstitialAd | null>(null);
   const [interstitialLoaded, setInterstitialLoaded] = useState(false);
   const wantsToShowRef = useRef(false);
@@ -321,16 +326,15 @@ const encodeEmojiToCurlyUnicode = (text: string) =>
       </ScrollView>
     </View>
   </View>
-</Modal> {showBanner && (
+</Modal>
+ {showBanner && (
   <BannerAd
     unitId={bannerAdId}
     size={BannerAdSize.ADAPTIVE_BANNER}
   />
 )}
 
-<TouchableOpacity onPress={() => setShowBanner(false)}>
-  <TText style={{color:"white",marginLeft:10}}>Hide Ads</TText>
-</TouchableOpacity> 
+
 
     </SafeAreaView>
   );

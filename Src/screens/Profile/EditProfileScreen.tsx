@@ -23,7 +23,8 @@ import { useSafeAreaInsets, SafeAreaView } from 'react-native-safe-area-context'
 // i18n
 import { TText } from '../../i18n/TText';
 import { useAutoI18n } from '../../i18n/AutoI18nProvider';
-import { uploaddocumnetaws } from '../../utils/Awsfile';
+// REVIEW: switched from AWS helper to new cloud upload utility
+import { uploadDocument } from '../../utils/CloudUpload';
 
 const COLORS = {
   bg: '#0B0B10',
@@ -58,6 +59,7 @@ export default function EditProfileScreen({ navigation }: any) {
   const userprofile = useSelector((s: any) => s?.authReducer?.userprofile);
   const token = useSelector((s: any) => s?.authReducer?.token);
 // Turn u{1f382} back into 🎂
+console.log("updateToken====>",userprofile)
 const decodeCurlyUnicode = (s: string) =>
   s.replace(/u\{([0-9a-fA-F]+)\}/g, (_, hex) =>
     String.fromCodePoint(parseInt(hex, 16)),
@@ -194,8 +196,10 @@ const encodeEmojiToCurlyUnicode = (text: string) =>
 
   const uploadImage = async (file: any) => {
     try {
-      const res = await uploaddocumnetaws(file, token);
-      const safe = normalizeS3Url(res?.location);
+      // REVIEW: using cloud upload utility instead of AWS
+      const uploadedUrl = await uploadDocument(file, token);
+      // uploadDocument returns a URL string directly
+      const safe = normalizeS3Url(uploadedUrl as string);
       setAvatarUri(safe || defaultAvatar);
     } catch (error) {
       Alert.alert('Upload failed', 'Could not upload image. Please try again.');

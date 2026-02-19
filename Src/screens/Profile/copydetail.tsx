@@ -36,7 +36,8 @@ import { useNavigation } from '@react-navigation/native';
 import { useSelector } from 'react-redux';
 import Avatar from '../../utils/Avatar';
 import { BannerAd, BannerAdSize, TestIds } from "react-native-google-mobile-ads";
-const bannerAdId = __DEV__ ? TestIds.BANNER : "ca-app-pub-2847186072494111/8751364810";
+import { BANNER_AD_ID } from "../../ads/ids";
+const bannerAdId = BANNER_AD_ID;
 // ✅ NEW: reusable comments modal
 import CommentsModal from '../../components/CommentsModal';
 import { TText } from '../../i18n/TText';

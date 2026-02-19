@@ -14,6 +14,8 @@ import {
   ActivityIndicator,  
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
+import { createThumbnail } from "react-native-create-thumbnail";
+
 import Feather from "react-native-vector-icons/Feather";
 import { useSelector } from "react-redux";
 import { useFocusEffect } from "@react-navigation/native";
@@ -71,7 +73,28 @@ export default function ManageUploadsScreen({ navigation }: any) {
   const token = useSelector((state: any) => state.authReducer.token);
   const userprofile = useSelector((state: any) => state.authReducer.userprofile);
   const currentUserId = String(userprofile?.ID ?? "");
-
+  const videoThumbCache = new Map<string, string>();
+  const getVideoThumbnail = async (videoUrl: string): Promise<string> => {
+    if (!videoUrl) return PLACEHOLDER_URL;
+  
+    if (videoThumbCache.has(videoUrl)) {
+      return videoThumbCache.get(videoUrl)!;
+    }
+  
+    try {
+      const res = await createThumbnail({
+        url: videoUrl,
+        timeStamp: 1000, // 1s frame
+      });
+  
+      videoThumbCache.set(videoUrl, res.path);
+      return res.path;
+    } catch (e) {
+      console.log("❌ thumbnail failed", videoUrl, e);
+      return PLACEHOLDER_URL;
+    }
+  };
+  
   // grid
   const { width } = useWindowDimensions();
   const COLS = 2;
@@ -88,50 +111,81 @@ export default function ManageUploadsScreen({ navigation }: any) {
   const [initialLoading, setInitialLoading] = useState(true);
 
   const isSelecting = useMemo(() => Object.keys(selected).length > 0, [selected]);
-
+  useEffect(() => {
+    items.forEach((item) => {
+      if (item.hasVideo && item.video && item.uri === PLACEHOLDER_URL) {
+        getVideoThumbnail(item.video).then((thumb) => {
+          setItems((prev) =>
+            prev.map((p) =>
+              p.id === item.id ? { ...p, uri: thumb } : p
+            )
+          );
+        });
+      }
+    });
+  }, [items]);
+  
   /* --------------------------- Helpers --------------------------- */
   const sanitizeCsv = (csv: any): string[] =>
     typeof csv === "string"
       ? csv.split(",").map((s) => s.trim()).filter(Boolean)
       : [];
-
+      const normalizeMediaUrl = (raw: any) => {
+        if (!raw) return "";
+      
+        // handle numbers etc.
+        let url = String(raw).trim();
+      
+        // remove wrapping quotes
+        url = url.replace(/^"+|"+$/g, "");
+      
+        // fix wp/json escaped slashes: https:\/\/site.com\/img.jpg
+        url = url.replace(/\\\//g, "/");
+      
+        // if URL contains spaces, encode them
+        try {
+          url = encodeURI(url);
+        } catch {}
+      
+        // already absolute
+        if (/^https?:\/\//i.test(url)) return url;
+      
+        // protocol-relative: //site.com/img.jpg
+        if (url.startsWith("//")) return `https:${url}`;
+      
+        // absolute path: /wp-content/...
+        if (url.startsWith("/")) return `${WP_BASE}${url}`;
+      
+        // relative path: wp-content/...
+        return `${WP_BASE}/${url}`;
+      };
+      
       const pickMediaFromPost = (p: any): UploadItem => {
         const f = p?.fields || {};
         const images = sanitizeCsv(f.images);
-        const hasVideo = !!(f.video && String(f.video).trim().length);
-        const mediaCount = images.length + (hasVideo ? 1 : 0);
-        const thumb = images[0] || PLACEHOLDER_URL;
-        const type: "image" | "video" =
-          images.length > 0 ? "image" : hasVideo ? "video" : "image";
       
-        const authorId = String(p?.author_id ?? "");
-        const isRepostedByUser =
-          !!p?.is_reposted_by_user ||
-          String(f?.reposted_by_users?.ID ?? "") === currentUserId;
-      
-        const repostCount =
-          typeof p?.repost_count === "number"
-            ? p.repost_count
-            : Number(f?.repost_count ?? 0) || 0;
+        const hasVideo = !!(f.video && String(f.video).trim());
+        const videoUrl = hasVideo ? normalizeMediaUrl(f.video) : undefined;
       
         return {
           id: String(p?.ID ?? p?.id ?? Math.random()),
-          uri: thumb,
-          type,
+          uri: images[0] ? normalizeMediaUrl(images[0]) : PLACEHOLDER_URL, // temp
+          type: hasVideo && images.length === 0 ? "video" : "image",
           hasVideo,
-          mediaCount,
+          mediaCount: images.length + (hasVideo ? 1 : 0),
           title: String(p?.title ?? ""),
           event: String(f?.event ?? ""),
-          tag_people: normalizeTagPeople(f?.tag_people), 
-          event_description: String(f?.event_description ?? ""),   // 👈 fixed
+          tag_people: normalizeTagPeople(f?.tag_people),
+          event_description: String(f?.event_description ?? ""),
           location: String(f?.location ?? ""),
           images,
-          video: hasVideo ? String(f.video).trim() : undefined,
-          authorId,
-          isRepostedByUser,
-          repostCount,
+          video: videoUrl,
+          authorId: String(p?.author_id ?? ""),
+          isRepostedByUser: !!p?.is_reposted_by_user,
+          repostCount: Number(p?.repost_count ?? 0) || 0,
         };
       };
+      
       
   const parseTagPeople = (raw: any): string[] => {
     if (!raw) return [];

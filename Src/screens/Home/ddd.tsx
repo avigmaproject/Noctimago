@@ -23,6 +23,8 @@ import {
   ActivityIndicator,
 } from "react-native";
 import Ionicons from "react-native-vector-icons/Ionicons";
+import messaging from "@react-native-firebase/messaging";
+import firestore from "@react-native-firebase/firestore";
 import { findNodeHandle } from "react-native";
 import { AvoidSoftInput, AvoidSoftInputView } from "react-native-avoid-softinput";
 import {
@@ -34,6 +36,7 @@ import {
   add_friend,
   sendnotify,
   getnotify,
+  updateprofile,
 } from "../../utils/apiconfig";
 import { UserProfile } from "../../store/action/auth/action";
 import { createThumbnail } from "react-native-create-thumbnail";
@@ -46,6 +49,7 @@ import Video from "react-native-video";
 import type { ViewToken } from "react-native";
 import Avatar from "../../utils/Avatar";
 import mobileAds, { MaxAdContentRating } from "react-native-google-mobile-ads";
+import { BANNER_AD_ID, INTERSTITIAL_AD_ID } from "../../ads/ids";
 import {
   BannerAd,
   BannerAdSize,
@@ -118,6 +122,7 @@ type ApiPost = {
   author: string;
   author_id?: string | number;
   author_profile_image?: string;
+  user_token?: string | null; // ✅ ADD
   date: string;
   fields: {
     event?: string;
@@ -159,6 +164,7 @@ type PostCardModel = {
   image: string;
   images: string[];
   likes: number;
+  receiverToken?: string | null; // ✅ ADD
   comments: number;
   commentsList: ApiComment[];
   hasVideo: boolean;
@@ -799,15 +805,10 @@ const [hasLoadedOnce, setHasLoadedOnce] = useState(false);   // prevents "No pos
   const [tabsWidth, setTabsWidth] = useState(0);
   const tabWidth = tabsWidth > 0 ? tabsWidth / FILTERS.length : 0;
   const activeIndex = FILTERS.findIndex((f) => f.key === active);
-// for android// const bannerAdId =  "ca-app-pub-2847186072494111/3698240885";
-// const INTERSTITIAL_UNIT_ID = __DEV__
-//   ? TestIds.INTERSTITIAL
-//   : "ca-app-pub-2847186072494111/5687551304"; // your real id
-// const bannerAdId= 'ca-app-pub-2847186072494111/9619792570'
-const bannerAdId= 'ca-app-pub-2847186072494111/9619792570'
-const INTERSTITIAL_UNIT_ID = __DEV__
-  ? TestIds.INTERSTITIAL
-  : "ca-app-pub-2847186072494111/6482385544"; // your real id
+// ads are configured centrally now
+const bannerAdId = BANNER_AD_ID;
+const INTERSTITIAL_UNIT_ID = INTERSTITIAL_AD_ID;
+
 
 
 const interstitialRef = useRef<InterstitialAd | null>(null);
@@ -938,7 +939,7 @@ useEffect(() => {
           const message = `${
             userprofile?.username || userprofile?.display_name || "Someone"
           } liked your comment`;
-          SendNotification(message, title, String(targetId), 1, Number(postId));
+          SendNotification(message, title, String(targetId), '',1, Number(postId));
         }
       
         }
@@ -1017,7 +1018,45 @@ useEffect(() => {
       }
     })();
   }, []);
+  const updateToken = async () => {
+    const fcmtoken = await getFcmToken();
+    try {
+      const payload = JSON.stringify({
+        user_token:fcmtoken
+      });
+console.log("updateToken====>",payload)
+      await updateprofile(payload, token);
 
+
+    } catch (error: any) {
+     
+    } finally {
+      
+    }
+  };
+  const saveMyFcmToken = async () => {
+
+    try {
+      const fcmtoken = await getFcmToken();
+      if (!token || !userprofile?.ID) return;
+  
+      console.log("📲 Saving FCM token", token.slice(0, 20) + "...");
+  
+      await firestore()
+        .collection("users")
+        .doc(String(userprofile.ID))
+        .set(
+          {
+            fcmToken: fcmtoken,
+            platform: Platform.OS,
+            updatedAt: firestore.FieldValue.serverTimestamp(),
+          },
+          { merge: true }
+        );
+    } catch (e) {
+      console.log("❌ Failed to save FCM token", e);
+    }
+  };
   function extractUnreadCount(payload: any): number {
     const pick = (obj: any): number => {
       if (!obj || typeof obj !== "object") return 0;
@@ -1095,6 +1134,8 @@ useEffect(() => {
   useFocusEffect(
     React.useCallback(() => {
       GetAllPost();
+      updateToken()
+      saveMyFcmToken()
       setCommentsByPost({});
       posts.forEach((p) => loadCommentsForPost(p.id));
       return undefined;
@@ -1102,7 +1143,19 @@ useEffect(() => {
   );
 
 
-
+  useEffect(() => {
+    const unsub = messaging().onTokenRefresh(async (newToken) => {
+      console.log("[FCM] token refreshed:", newToken.slice(0, 25), "...");
+      if (userprofile?.ID) {
+        await firestore().collection("users").doc(String(userprofile.ID)).set(
+          { fcmToken: newToken, platform: Platform.OS, updatedAt: firestore.FieldValue.serverTimestamp() },
+          { merge: true }
+        );
+      }
+    });
+  
+    return unsub;
+  }, [userprofile?.ID]);
   useFocusEffect(
     React.useCallback(() => {
       // When Home tab gains focus, reload feed & comments
@@ -1127,22 +1180,59 @@ useEffect(() => {
     } catch (error) {
     }
   };
-
+  async function getReceiverTokenFromFirestore(userId: string): Promise<string | null> {
+    const uid = String(userId);
+    const docRef = firestore().collection("users").doc(uid);
+  
+    const snap = await docRef.get();
+    if (!snap.exists) {
+      console.log("[FCM] doc missing:", uid);
+      return null;
+    }
+  
+    const data = snap.data();
+    const tok = (data?.fcmToken ?? "").trim();
+  
+    console.log("[FCM] Firestore token for", uid, "=", tok.slice(0, 25), "...");
+    return tok || null;
+  }
+  
   const SendNotification = async (
     message: string,
     title: string,
     receiverId?: string,
+    receiverToken?: string | null,
     type?: number,
     postId?: number
   ) => {
     try {
       const me = String(userprofile?.ID ?? "");
       const rc = String(receiverId ?? "");
+  
+      console.log("[SendNotification] START", {
+        me,
+        rc,
+      
+      });
+  
+      // ❌ no receiver OR self-notification
       if (!rc || me === rc) {
+        console.log("[SendNotification] Skipped (self or invalid receiver)");
         return;
       }
+  
+      // 🔁 fallback to Firestore
+       let tokenToUse
+
+      if (!tokenToUse) {
+        tokenToUse = await getReceiverTokenFromFirestore(rc);
+      }
+      
+      console.log("[SendNotification] using token =", tokenToUse?.slice(0, 25), "...");
+      
+  
       const payload = JSON.stringify({
-        UserToken: fcmToken,
+        UserToken: tokenToUse,
         message,
         msgtitle: title,
         User_PkeyID: userprofile?.ID,
@@ -1150,15 +1240,20 @@ useEffect(() => {
         NTN_C_L: type,
         NTN_Sender_Name: userprofile?.meta?.first_name,
         NTN_Sender_Img: userprofile?.meta?.profile_image,
-        NTN_Reciever_Name: "",
-        NTN_Reciever_Img: "",
         NTN_UP_PkeyID: postId,
         NTN_UP_Path: "",
       });
-      await sendnotify(payload, token);
+  
+      console.log("[SendNotification] Payload →", payload);
+  
+      const res = await sendnotify(payload, token);
+      console.log("[SendNotification] ✅ Sent", res);
     } catch (err) {
+      console.log("[SendNotification] ❌ ERROR", err);
     }
   };
+  
+  
 
   const GetAllPost = useCallback(async () => {
     if (getAllPostInFlight.current) return;        // avoid racing fetches
@@ -1216,7 +1311,7 @@ useEffect(() => {
     } finally {
       getAllPostInFlight.current = false;
       // tiny delay smooths out ultra-fast flicker on some devices
-      setTimeout(() => setLoadingPosts(false), 120);
+      setTimeout(() => setLoadingPosts(false), 20);
     }
   }, [token, userprofile?.ID, loadCommentsForPost]);
   
@@ -1331,6 +1426,7 @@ const refresh = async () => {
   });
 
   const onRepost = async (post: PostCardModel) => {
+  
     try {
       if (!token) {
         Alert.alert("Sign in required", "Please log in to repost.");
@@ -1345,10 +1441,11 @@ const refresh = async () => {
         if (post.authorId && String(post.authorId) !== String(userprofile?.ID)) {
           const title = "Repost";
           const message = `${userprofile?.username || "Someone"} reposted your post`;
-          SendNotification(message, title, String(post.authorId), 1, Number(post.id));
+          SendNotification(message, title, String(post.authorId),post.receiverToken , 1, Number(post.id));
         }
         await GetAllPost();
-        Alert.alert("Done", "Post reposted to your feed.");
+        Alert.alert("Done", "Post reposted.");
+
       } catch (e: any) {
         Alert.alert("Repost failed", e?.message || "Please try again.");
       }
@@ -1373,6 +1470,7 @@ const refresh = async () => {
               await unrepostApi(post.id, token);
               await GetAllPost();
               Alert.alert("Done", "Post unreposted.");
+           
             } catch (e: any) {
               Alert.alert("Unrepost failed", e?.message || "Please try again.");
             }
@@ -1401,7 +1499,7 @@ const refresh = async () => {
       },
     });
   };
-
+ 
   const onDeletePost = (post: PostCardModel) => {
     Alert.alert("Delete post?", "Do you want to delete this post?.", [
       { text: "Cancel", style: "cancel" },
@@ -1546,7 +1644,7 @@ const toggleLike = async (postId: string, item: PostCardModel) => {
       const title = "New like";
       const message = `${userprofile?.username || "Someone"} liked your post`;
       {userprofile?.Id!==item?.authorId &&
-      SendNotification(message, title, item?.authorId, 1, Number(postId));
+      SendNotification(message, title, item?.authorId, item.receiverToken,1, Number(postId));
       }
     } else {
       await unlikePostApi(postId, token);
@@ -1617,7 +1715,7 @@ const toggleLike = async (postId: string, item: PostCardModel) => {
   
       // 🔔 1) Notify post author (existing behavior)
       if (item.authorId && String(item.authorId) !== String(userprofile?.ID)) {
-        SendNotification(message, title, item.authorId, 1, Number(postId));
+        SendNotification(message, title, item.authorId, item.receiverToken,   1, Number(postId));
       }
   
       // 🔔 2) If this is a reply, also notify the comment author
@@ -1633,7 +1731,7 @@ const toggleLike = async (postId: string, item: PostCardModel) => {
         ) {
           const replyTitle = "New reply";
           const replyMsg = `${userprofile?.username || userprofile?.display_name || "Someone"} replied to your comment`;
-          SendNotification(replyMsg, replyTitle, String(replyTargetId), 1, Number(postId));
+          SendNotification(replyMsg, replyTitle, String(replyTargetId), item.receiverToken,1, Number(postId));
         }
       }
   
@@ -1644,7 +1742,7 @@ const toggleLike = async (postId: string, item: PostCardModel) => {
   
       for (const t of tagged) {
         const msg = `${userprofile?.username || "Someone"} mentioned you in a comment`;
-        SendNotification(msg, "You were mentioned", t.id, 1, Number(postId));
+        SendNotification(msg, "You were mentioned", t.id,'',    1, Number(postId));
       }
   
       setCommentDrafts((p) => ({ ...p, [postId]: "" }));
@@ -1768,7 +1866,7 @@ const toggleLike = async (postId: string, item: PostCardModel) => {
       if (follow) {await followUserApi(authorId, token);
       const title = "New follower";
       const message = `${userprofile?.username || userprofile?.display_name || "Someone"} started following you`;
-      SendNotification(message, title, authorId, 1);
+      SendNotification(message, title, authorId,'',    1);
       }
       else await unfollowUserApi(authorId, token);
     } catch (e) {
@@ -2145,6 +2243,10 @@ function PostCard({
 }) {
   const [ratioMap, setRatioMap] = useState<Record<number, number>>({}); // index -> ratio (w/h)
 const displayMode = "contain"; // or user setting: "contain" | "cover"
+const runMenuAction = (fn: () => void) => {
+  closeMenu();                 // ✅ close instantly
+  requestAnimationFrame(fn);   // ✅ run action after close (smooth)
+};
 
   const nav = useNavigation<any>();
   const cardRef = useRef<View>(null);
@@ -2476,19 +2578,19 @@ const closeComments = () => setCommentModal({ open: false });
         <View style={styles.menu}>
   {isSelf ? (
     <>
-      <TouchableOpacity style={styles.menuItem} onPress={onEdit}>
+      <TouchableOpacity style={styles.menuItem}  onPress={() => runMenuAction(onEdit)}>
         <Ionicons name="create-outline" size={18} color={COLORS.text} />
         <TText style={styles.menuText}>Edit</TText>
       </TouchableOpacity>
 
-      <TouchableOpacity style={styles.menuItem} onPress={onDelete}>
+      <TouchableOpacity style={styles.menuItem} onPress={() => runMenuAction(onDelete)}>
         <Ionicons name="trash-outline" size={18} color={COLORS.accent} />
         <TText style={[styles.menuText, { color: COLORS.accent }]}>Delete</TText>
       </TouchableOpacity>
     </>
   ) : (
     <>
-      <TouchableOpacity style={styles.menuItem} onPress={onRepost}>
+      <TouchableOpacity style={styles.menuItem} onPress={() => runMenuAction(onRepost)}>
         <Ionicons name="repeat-outline" size={18} color={COLORS.text} />
         <TText style={styles.menuText}>Repost</TText>
       </TouchableOpacity>
@@ -2496,7 +2598,7 @@ const closeComments = () => setCommentModal({ open: false });
       {/* ⭐ REQUIRED BY APPLE ⭐ */}
       <TouchableOpacity
         style={styles.menuItem}
-        onPress={() => onReportPost(post.id)}
+        onPress={() => runMenuAction(() => onReportPost(post.id))}
       >
         <Ionicons name="flag-outline" size={18} color="red" />
         <TText style={[styles.menuText, { color: "red" }]}>
@@ -2897,6 +2999,7 @@ function mapApiPostToCard(p: ApiPost, meId?: string | number): PostCardModel {
     repostedByName,
     repostedAt: p.date,
     description: p.fields?.event_description || "", 
+    receiverToken: p.user_token ?? null, // ✅
   };
 }
 
@@ -3088,7 +3191,7 @@ const styles = StyleSheet.create({
   },
   media: {
     width: "100%",
-    height: 240,
+     height: 400,
     borderRadius: 12,
     backgroundColor: "#0A0B0E",
     overflow: "hidden",

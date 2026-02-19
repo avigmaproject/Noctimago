@@ -24,10 +24,11 @@ import { useSelector } from "react-redux";
 import { GooglePlacesAutocomplete } from "react-native-google-places-autocomplete";
 import { TText } from "../../i18n/TText";
 import { allusers, getFcmToken, requestUserPermission, sendnotify } from "../../utils/apiconfig";
-import { uploaddocumnetaws } from "../../utils/Awsfile";
+// REVIEW: switched from AWS helper to new cloud upload utility
+import { uploadDocument } from "../../utils/CloudUpload";
 
 const AVATAR = "";
-// const GOOGLE_PLACES_KEY = "AIzaSyCUs425jvu7D3T-c3LX8eM2iS5XFYvgFUI";
+const GOOGLE_PLACES_KEY = "";
 
 // --- Emoji / entity helpers (same behavior as PostDetailScreen) ---
 const decodeCurlyUnicode = (s: string) =>
@@ -369,18 +370,18 @@ export default function EditPostScreen({ route, navigation }: any) {
           type: mime || (isVideo ? "video/mp4" : "image/jpeg"),
         };
 
-        const up = await uploaddocumnetaws(file as any, token);
-        const normalizedUrl = decodeURIComponent((up as any).location);
+        // REVIEW: uploadDocument returns URL string directly
+        const normalizedUrl = await uploadDocument(file as any, token);
 
         if (isImage) {
           setImages((prev) => [
             ...prev,
-            { uri: normalizedUrl, type: file.type, fileName: file.name },
+            { uri: decodeURIComponent(normalizedUrl as string), type: file.type, fileName: file.name },
           ]);
         } else if (isVideo) {
           setVideos((prev) => [
             ...prev,
-            { uri: normalizedUrl, type: file.type, fileName: file.name },
+            { uri: decodeURIComponent(normalizedUrl as string), type: file.type, fileName: file.name },
           ]);
         }
       }

@@ -22,9 +22,18 @@ export default function NotificationStack() {
       <Stack.Screen name="PostDetailScreen" component={PostDetailScreen} /> */}
        <Stack.Screen name="MessageList" component={MessageList} />
       <Stack.Screen name="Chat" component={Chat} />
-      <Stack.Screen name="GroupSettings" component={GroupSettings} />
-  <Stack.Screen name="GroupChat" component={GroupChat} />
-  <Stack.Screen name="AddFriend" component={AddFriend} />
+      <Stack.Screen name="GroupSettings" component={GroupSettings} options={{
+    headerBackTitleVisible: false,
+    headerBackTitle: '',
+  }}/>
+  <Stack.Screen name="GroupChat" component={GroupChat} options={{
+    headerBackTitleVisible: false,
+    headerBackTitle: '',
+  }}/>
+  <Stack.Screen name="AddFriend" component={AddFriend} options={{
+    headerBackTitleVisible: false,
+    headerBackTitle: '',
+  }} />
       
 
     </Stack.Navigator>

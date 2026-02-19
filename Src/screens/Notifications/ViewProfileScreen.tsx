@@ -16,6 +16,8 @@ import {
   Modal
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
+import { createThumbnail } from "react-native-create-thumbnail";
+
 import Feather from "react-native-vector-icons/Feather";
 import { useRoute, useNavigation, useFocusEffect } from "@react-navigation/native";
 import { useSelector } from "react-redux";
@@ -28,18 +30,15 @@ import { sendnotify } from "../../utils/apiconfig";
 type RouteParams = { NTN_User_PkeyID?: number };
 
 type UploadItem = {
-  id: string;
+  id: string;            // postId
   postId: string;
+  cover: string;         // grid image (first image or thumbnail)
   kind: "image" | "video";
-  url: string;
-  thumbnail?: string;
-  title?: string;
-  event?: string;
-  location?: string;
+  mediaCount: number;    // total images + video
+  repostCount: number;   // repost_count
   date?: string;
-  likes?: number;
-  likedBy?: number[];
 };
+
 
 /* ---------------- Theme ---------------- */
 const BG = "#0B0B12";
@@ -58,6 +57,20 @@ const isValidImg = (u?: string | null) =>
 
 const avatarOr = (u?: string | null) =>
   isValidImg(u) ? (u as string) : "https://i.pravatar.cc/150?img=1";
+const PLACEHOLDER =
+  "";
+
+const safeUri = (u?: any) =>
+  typeof u === "string" && u.trim().length > 0 ? u.trim() : PLACEHOLDER;
+
+// count images from comma string
+const parseImages = (images: any): string[] => {
+  if (typeof images !== "string") return [];
+  return images
+    .split(",")
+    .map((x) => x.trim())
+    .filter((x) => x.length > 0);
+};
 
 const splitImages = (s?: string | null): string[] =>
   (s || "")
@@ -93,49 +106,36 @@ const toBool = (v: any): boolean => {
 };
 
 /** Map one /user-posts post to N UploadItems (images + optional video) */
-function mapPostToUploadItems(p: any): UploadItem[] {
-  const pid = String(p?.ID ?? p?.id ?? "");
+function mapPostToGridItem(p: any): UploadItem | null {
+  const postId = String(p?.ID ?? p?.id ?? "");
   const f = p?.fields ?? {};
-  const imgs = splitImages(f?.images);
-  const video = (f?.video || "").trim();
-  const likes = Number(f?._likes ?? 0) || 0;
-  const likedBy: number[] = Array.isArray(f?._liked_users)
-    ? f._liked_users.map((n: any) => Number(n)).filter(Boolean)
-    : [];
 
-  const baseMeta = {
-    postId: pid,
-    title: p?.title ?? "",
-    event: f?.event ?? "",
-    location: f?.location ?? "",
-    date: p?.date ?? "",
-    likes,
-    likedBy,
-  };
+  const images = parseImages(f?.images);
+  const video = typeof f?.video === "string" ? f.video.trim() : "";
 
-  const items: UploadItem[] = [];
+  const isVideo = f?.custom_post_type === "video" || !!video;
 
-  imgs.forEach((url: string, i: number) => {
-    items.push({
-      id: `${pid}-img-${i}`,
-      kind: "image",
-      url,
-      ...baseMeta,
-    });
-  });
+  // media count (images + video)
+  const mediaCount = images.length + (video ? 1 : 0);
 
-  if (isValidImg(video)) {
-    items.push({
-      id: `${pid}-vid`,
-      kind: "video",
-      url: video,
-      thumbnail: imgs[0],
-      ...baseMeta,
-    });
+  // cover (grid image)
+  let cover = images[0] || ""; // image cover
+  if (isVideo) {
+    // if video post and no images, cover empty -> we will show placeholder or thumbnail later
+    cover = images[0] || "";
   }
 
-  return items;
+  return {
+    id: postId,
+    postId,
+    cover: safeUri(cover), // ✅ never empty
+    kind: isVideo ? "video" : "image",
+    mediaCount: Math.max(1, mediaCount), // at least 1
+    repostCount: Number(p?.repost_count ?? 0) || 0,
+    date: p?.date ?? "",
+  };
 }
+
 
 /* ---------------- Screen ---------------- */
 export default function ViewProfileScreen() {
@@ -163,7 +163,7 @@ export default function ViewProfileScreen() {
     isPublicProfile: false,
     followersCount: 0,
     followingCount: 0,
-    isFollowing: false,
+    isFollowing: false,  userToken: "", 
   });
   const {
     profileName,
@@ -217,14 +217,15 @@ export default function ViewProfileScreen() {
       });
       if (!res.ok) throw new Error(`Profile HTTP ${res.status}`);
       const json = await res.json();
-
+console.log("res",res)
       const p = json?.profile;
       const meta = p?.meta ?? {};
+      // console.log("metaaaaaa====",meta?.user_token)
       const name =
         (meta?.first_name || meta?.last_name
           ? `${meta.first_name ?? ""} ${meta.last_name ?? ""}`.trim()
           : p?.name || meta?.nickname) || "User";
-console.log("p",json?.profile)
+// console.log("p",json?.profile)
       const unameBase = (meta?.nickname || p?.name || "user").toString();
       const uname = unameBase.replace(/\s+/g, "");
       const rawBio = String(p?.bio ?? "");
@@ -237,6 +238,8 @@ console.log("p",json?.profile)
         followersCount: Number(json?.profile?.followers_count ?? 0),
         followingCount: Number(json?.profile?.following_count ?? 0),
         isFollowing: Boolean(json?.profile?.is_following),
+     
+  userToken: String(meta?.user_token ?? ""),
       };
       setProfileVM(newVM);
 
@@ -249,53 +252,115 @@ console.log("p",json?.profile)
 
   const fetchUploadsForUser = React.useCallback(async () => {
     if (!userId) return;
+  
     try {
       const res = await fetch(`${WP_BASE}/wp-json/app/v1/user-posts/${userId}`, {
         method: "GET",
         headers,
       });
       if (!res.ok) throw new Error(`Uploads HTTP ${res.status}`);
+  
       const json = await res.json();
-
       const posts: any[] = json?.posts ?? [];
-      const mapped: UploadItem[] = posts.flatMap(mapPostToUploadItems);
-
-      // newest first by post date
+  
+      // 1) map posts → upload items
+      let mapped: UploadItem[] = posts
+      .map(mapPostToGridItem)
+      .filter(Boolean) as UploadItem[];
+    
+  
+      // 2) sort ONCE (newest first)
       mapped.sort(
         (a, b) => (new Date(b.date || 0).getTime() || 0) - (new Date(a.date || 0).getTime() || 0)
       );
-
+  
+      // 3) set initial list immediately (fast UI)
       setUploads(mapped);
+  
+      // 4) build list of videos needing thumbnails
+      const needThumb = posts
+      .map((p) => {
+        const postId = String(p?.ID ?? "");
+        const video = p?.fields?.video;
+        return { postId, video };
+      })
+      .filter((x) => typeof x.video === "string" && x.video.trim().length > 0)
+      .slice(0, 6); // ✅ only first 6 video thumbnails
+    
+    
+    
+  
+      if (!needThumb.length) return;
+  
+      // 5) generate thumbnails AFTER UI is painted (avoid jank)
+      InteractionManager.runAfterInteractions(async () => {
+        const BATCH = 2;
+      
+        for (let i = 0; i < needThumb.length; i += BATCH) {
+          const slice = needThumb.slice(i, i + BATCH);
+      
+          await Promise.all(
+            slice.map(async (it) => {
+              try {
+                const t = await createThumbnail({ url: it.video.trim(), timeStamp: 200 });
+                const thumbPath = t?.path;
+      
+                if (thumbPath) {
+                  setUploads((prev) =>
+                    prev.map((x) =>
+                      x.postId === it.postId ? { ...x, cover: safeUri(thumbPath) } : x
+                    )
+                  );
+                }
+              } catch {}
+            })
+          );
+        }
+      });
+      
     } catch {
       setUploads([]);
     }
   }, [userId, headers]);
+  
 
   // ----- guarded load (once per userId) + defer after interactions -----
   const inFlightRef = React.useRef(false);
   const loadedForRef = React.useRef<number | null>(null);
+  const [uploadsLoading, setUploadsLoading] = React.useState(false);
 
   const loadAll = React.useCallback(async () => {
     if (!userId) return;
     if (inFlightRef.current) return;
-    if (loadedForRef.current === userId) return; // already loaded for this userId
-
+    if (loadedForRef.current === userId) return;
+  
     inFlightRef.current = true;
     setLoading(true);
+  
     try {
+      // ✅ 1) PROFILE FIRST (fast paint)
       const pf = await fetchProfile();
+      setLoading(false); // ✅ name/email etc immediately show
+  
       const visible = isSelf || pf.public || pf.following;
+  
+      // ✅ 2) UPLOADS LATER (don’t block UI)
       if (visible) {
-        await fetchUploadsForUser();
+        setUploadsLoading(true);
+        setTimeout(() => {
+          fetchUploadsForUser().finally(() => setUploadsLoading(false));
+        }, 500);
+        
       } else {
         setUploads([]);
       }
+  
       loadedForRef.current = userId;
     } finally {
-      setLoading(false);
       inFlightRef.current = false;
     }
   }, [userId, fetchProfile, fetchUploadsForUser, isSelf]);
+  
   const SendNotification = async (
     message: string,
     title: string,
@@ -325,7 +390,7 @@ console.log("p",json?.profile)
       });
 
       await sendnotify(payload, token);
-      console.log("payload",payload)
+      // console.log("payload",payload)
     } catch (err) {
     }
   };
@@ -383,7 +448,7 @@ console.log("p",json?.profile)
         },
       });
       if (!res.ok) throw new Error(`${wasFollowing ? "Unfollow" : "Follow"} HTTP ${res.status}`);
-console.log("res",res)
+// console.log("res",res)
       // Re-sync from server
       const pf = await fetchProfile();
 
@@ -470,15 +535,25 @@ console.log("res",res)
     <TouchableOpacity
       activeOpacity={0.9}
       style={styles.gridCell}
-      onPress={() => {
-        nav.navigate("PostDetailScreen", { postId: item.postId, token });
-      }}
+      onPress={() => nav.navigate("PostDetailScreen", { postId: item.postId, token })}
     >
-      <Image
-        source={{ uri: item.kind === "video" ? item.thumbnail || item.url : item.url }}
-        style={styles.gridImg}
-        resizeMode="cover"
-      />
+      <Image source={{ uri: safeUri(item.cover) }} style={styles.gridImg} resizeMode="cover" />
+  
+      {/* Top-left media count (stack like insta) */}
+      <View style={styles.mediaBadge}>
+        <Feather name="layers" size={12} color="#fff" />
+        <Text style={styles.badgeText}>{item.mediaCount}</Text>
+      </View>
+  
+      {/* Bottom-left repost count */}
+      {item.repostCount > 0 && (
+        <View style={styles.repostBadge}>
+          <Feather name="repeat" size={12} color="#fff" />
+          <Text style={styles.badgeText}>{item.repostCount}</Text>
+        </View>
+      )}
+  
+      {/* Video icon */}
       {item.kind === "video" && (
         <View style={{ position: "absolute", right: 6, bottom: 6 }}>
           <Feather name="play-circle" size={16} color="#fff" />
@@ -486,6 +561,7 @@ console.log("res",res)
       )}
     </TouchableOpacity>
   );
+  
 
   /* -------- UI -------- */
   return (
@@ -626,6 +702,7 @@ console.log("res",res)
                         userId, // other user's WP ID
                         name: profileName,
                         avatar,
+                        token:profileVM.userToken
                       });
                     }}
                   >
@@ -661,11 +738,15 @@ console.log("res",res)
                   scrollEnabled={false}
                   columnWrapperStyle={{ gap: 2 }}
                   contentContainerStyle={{ gap: 2 }}
-                  initialNumToRender={12}
-                  windowSize={7}
-                  maxToRenderPerBatch={12}
-                  updateCellsBatchingPeriod={50}
-                  removeClippedSubviews
+                  // initialNumToRender={9}
+                  initialNumToRender={9}          // ✅
+                  maxToRenderPerBatch={9}         // ✅
+                  updateCellsBatchingPeriod={50}  // ✅
+                  windowSize={5}                  // ✅ reduce
+                  removeClippedSubviews={true}   
+                  // maxToRenderPerBatch={12}
+                  // updateCellsBatchingPeriod={50}
+          
                 />
               )}
             </View>
@@ -712,6 +793,36 @@ console.log("res",res)
 /* ---------------- Styles ---------------- */
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: BG },
+  mediaBadge: {
+    position: "absolute",
+    left: 8,
+    top: 8,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+    borderRadius: 10,
+    backgroundColor: "rgba(0,0,0,0.45)",
+  },
+  repostBadge: {
+    position: "absolute",
+    left: 8,
+    bottom: 8,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+    borderRadius: 10,
+    backgroundColor: "rgba(0,0,0,0.45)",
+  },
+  badgeText: {
+    color: "#fff",
+    fontSize: 12,
+    fontWeight: "700",
+  },
+  
   bioModalBackdrop: {
     flex: 1,
     backgroundColor: "rgba(0,0,0,0.6)",

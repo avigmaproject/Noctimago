@@ -85,7 +85,7 @@ android {
         applicationId "com.noctimago"
         minSdkVersion rootProject.ext.minSdkVersion
         targetSdkVersion rootProject.ext.targetSdkVersion
-        versionCode 3
+        versionCode 18
         versionName "1.0"
         multiDexEnabled true
     }

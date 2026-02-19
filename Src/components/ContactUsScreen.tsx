@@ -198,7 +198,7 @@ Sent from the Noctimago app (${Platform.OS})
       const payload = isJson ? await res.json() : await res.text();
 
       if (!res.ok) {
-        console.log("Email API error:", payload);
+        // console.log("Email API error:", payload);
         throw new Error(typeof payload === "string" ? payload : "Failed to send email");
       }
 

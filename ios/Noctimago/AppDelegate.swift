@@ -3,6 +3,7 @@ import React
 import React_RCTAppDelegate
 import ReactAppDependencyProvider
 import FirebaseCore
+import GoogleSignIn   // ✅ already imported
 
 @main
 class AppDelegate: UIResponder, UIApplicationDelegate {
@@ -29,8 +30,24 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
       in: window,
       launchOptions: launchOptions
     )
-FirebaseApp.configure()
+
+    FirebaseApp.configure()
     return true
+  }
+
+  // ✅ ADD THIS FUNCTION
+  func application(_ app: UIApplication,
+                   open url: URL,
+                   options: [UIApplication.OpenURLOptionsKey : Any] = [:]) -> Bool {
+
+    // Let Google Sign-In SDK try to handle the URL
+    if GIDSignIn.sharedInstance.handle(url) {
+      return true
+    }
+
+    // If you have other SDKs that use URL callbacks (Facebook, etc.), handle them here
+
+    return false
   }
 }
 

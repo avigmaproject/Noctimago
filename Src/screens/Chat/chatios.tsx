@@ -35,9 +35,11 @@ import { useSelector } from "react-redux";
 import { AvoidSoftInput, AvoidSoftInputView } from "react-native-avoid-softinput";
 import firestore from "@react-native-firebase/firestore";
 import { firebase } from "@react-native-firebase/app";
-import { uploaddocumnetaws } from "../../utils/Awsfile";
+// REVIEW: switched from AWS helper to new cloud upload utility
+import { uploadDocument } from "../../utils/CloudUpload";
 import Avatar from "../../utils/Avatar";
 import { sendchatnotify } from "../../utils/apiconfig";
+import ZoomableChatImage from "../../components/ZoomableChatImage";
 
 /* ---------------- Theme ---------------- */
 const COLORS = {
@@ -763,11 +765,12 @@ await SendNotification(
         type: res.mime,
         uri: res.path,
       } as any;
-      const uploaded: any = await uploaddocumnetaws(file);
-      if (uploaded?.location)
+      // REVIEW: uploadDocument returns URL string directly
+      const uploadedUrl: any = await uploadDocument(file);
+      if (uploadedUrl)
         await sendInternal({
           kind: "image",
-          uri: uploaded.location,
+          uri: uploadedUrl,
         } as any);
     } catch {}
   };
@@ -786,11 +789,12 @@ await SendNotification(
         type: res.mime,
         uri: res.path,
       } as any;
-      const uploaded: any = await uploaddocumnetaws(file);
-      if (uploaded?.location)
+      // REVIEW: uploadDocument returns URL string directly
+      const uploadedUrl: any = await uploadDocument(file);
+      if (uploadedUrl)
         await sendInternal({
           kind: "image",
-          uri: uploaded.location,
+          uri: uploadedUrl,
         } as any);
     } catch {}
   };
@@ -866,10 +870,12 @@ await SendNotification(
           delayLongPress={300}
           activeOpacity={0.8}
         >
-          {item.text ? (
-            <Text style={styles.msgText}>{item.text}</Text>
+         {item.text ? (
+            <Text style={styles.msgText}>
+              {item.text}
+            </Text>
           ) : (
-            <Image source={{ uri: item.image }} style={styles.msgImage} />
+            <ZoomableChatImage uri={item.image} style={styles.msgImage} />
           )}
           <View
             style={{

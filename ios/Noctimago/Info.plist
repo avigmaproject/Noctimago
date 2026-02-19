@@ -20,6 +20,10 @@
 	<string>$(MARKETING_VERSION)</string>
 	<key>CFBundleSignature</key>
 	<string>????</string>
+			<key>AssociatedDomains</key>
+<array>
+    <string>applinks:https://noctimago.com</string>
+</array>
 	<key>CFBundleURLTypes</key>
 	<array>
 		<dict>
@@ -30,6 +34,7 @@
 				<string>com.googleusercontent.apps.965542777595-9maferkinb7et77nbsa1c84qdpjpraih</string>
 			</array>
 		</dict>
+
 		<dict>
 			<key>CFBundleTypeRole</key>
 			<string>Editor</string>
@@ -41,14 +46,13 @@
 			</array>
 		</dict>
 	</array>
+
+
 	<key>CFBundleVersion</key>
 	<string>$(CURRENT_PROJECT_VERSION)</string>
 	<key>GADApplicationIdentifier</key>
 	<string>ca-app-pub-2847186072494111~1324701288</string>
-	<key>LSApplicationQueriesSchemes</key>
-	<array>
-		<string>comgooglemaps</string>
-	</array>
+
 	<key>LSRequiresIPhoneOS</key>
 	<true/>
 	<key>NSAppTransportSecurity</key>
@@ -59,21 +63,26 @@
 		<true/>
 	</dict>
 	<key>NSCameraUsageDescription</key>
-	<string>We need access to your camera to take a profile picture.</string>
-	<key>NSLocationWhenInUseUsageDescription</key>
-	<string>We use your location to suggest nearby places.</string>
+	<string>Noctimago need access to your camera to take a profile picture.</string>
+<key>NSLocationWhenInUseUsageDescription</key>
+<string>Noctimago use your location to suggest nearby places.</string>
+
+<key>NSLocationAlwaysAndWhenInUseUsageDescription</key>
+<string>Noctimago use your location to suggest nearby places, even when the app is not active.</string>
+
 	<key>NSMicrophoneUsageDescription</key>
-	<string>We need access to your microphone when recording video.</string>
+	<string>Noctimago need access to your microphone when recording video.</string>
 	<key>NSPhotoLibraryAddUsageDescription</key>
-	<string>We need access to save cropped profile pictures.</string>
+<string>Noctimago need access to your photo library to save photos.</string>
 	<key>NSPhotoLibraryUsageDescription</key>
-	<string>We need access to your photo library to update your profile picture.</string>
-	<key>NSUserTrackingUsageDescription</key>
-	<string>This identifier will be used to deliver personalized ads to you.</string>
+<string>Noctimago need access to your photo library to save photos.</string>
+	
 	<key>RCTNewArchEnabled</key>
 	<true/>
 	<key>LSApplicationQueriesSchemes</key>
 <array>
+
+		<string>comgooglemaps</string>
   <string>google</string>
   <string>com.googleusercontent.apps.406896981733-nn22htbnks47b48n9fgsmmpuien5k371</string>
 </array>

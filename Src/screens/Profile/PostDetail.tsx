@@ -20,15 +20,17 @@ import {
   View,
 } from 'react-native';
 import { UIManager, findNodeHandle } from "react-native";
-
+import { saveImageToGallery } from '../../components/saveToGallery';
 import Feather from 'react-native-vector-icons/Feather';
 import Ionicons from 'react-native-vector-icons/Ionicons';
 import { sendnotify } from '../../utils/apiconfig';
-
+import messaging from "@react-native-firebase/messaging";
+import firestore from "@react-native-firebase/firestore";
 import Video, { OnBufferData, OnLoadData } from 'react-native-video';
 import ImageView from 'react-native-image-viewing';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
-import CameraRoll from '@react-native-camera-roll/camera-roll';
+import { CameraRoll } from '@react-native-camera-roll/camera-roll';
+
 import RNFS from 'react-native-fs';
 import RNFetchBlob from 'react-native-blob-util';
 import { useHeaderHeight } from '@react-navigation/elements';
@@ -36,7 +38,8 @@ import { useNavigation } from '@react-navigation/native';
 import { useSelector } from 'react-redux';
 import Avatar from '../../utils/Avatar';
 import { BannerAd, BannerAdSize, TestIds } from "react-native-google-mobile-ads";
-const bannerAdId = __DEV__ ? TestIds.BANNER : "ca-app-pub-2847186072494111/8751364810";
+import { BANNER_AD_ID } from "../../ads/ids";
+const bannerAdId = BANNER_AD_ID;
 // ✅ NEW: reusable comments modal
 import CommentsModal from '../../components/CommentsModal';
 import { TText } from '../../i18n/TText';
@@ -254,7 +257,22 @@ async function searchUsersApi(query: string, token?: string, meId?: string): Pro
     return [];
   }
 }
+async function getReceiverTokenFromFirestore(userId: string): Promise<string | null> {
+  const uid = String(userId);
+  const docRef = firestore().collection("users").doc(uid);
 
+  const snap = await docRef.get();
+  if (!snap.exists) {
+    console.log("[FCM] doc missing:", uid);
+    return null;
+  }
+
+  const data = snap.data();
+  const tok = (data?.fcmToken ?? "").trim();
+
+  console.log("[FCM] Firestore token for", uid, "=", tok.slice(0, 25), "...");
+  return tok || null;
+}
 /** Notify the post author when someone likes or shares */
 async function notifyPostAuthor({
   post,
@@ -281,9 +299,14 @@ async function notifyPostAuthor({
 
     // choose a code your backend understands (example: 3=like, 4=share)
     const code = isLike ? 3 : 4;
+    let tokenToUse
 
+    if (!tokenToUse) {
+      tokenToUse = await getReceiverTokenFromFirestore(authorId);
+    }
+    
     const payload = JSON.stringify({
-      UserToken: '',
+      UserToken: tokenToUse,
       message,
       msgtitle: title,
       User_PkeyID: senderProfile?.ID,  // sender
@@ -318,8 +341,14 @@ async function notifyTaggedUser({
   senderProfile?: any;
 }) {
   try {
+    let tokenToUse
+
+    if (!tokenToUse) {
+      tokenToUse = await getReceiverTokenFromFirestore(receiverUserId);
+    }
+    
     const payload = JSON.stringify({
-      UserToken: "",
+      UserToken: tokenToUse,
       message: `${senderProfile?.username || "Someone"} mentioned you in a comment`,
       msgtitle: "You were mentioned",
       User_PkeyID: senderProfile?.ID,
@@ -1020,7 +1049,17 @@ export default function PostDetailScreen({ route, navigation }: any) {
   const [busyCommentId, setBusyCommentId] = useState<string | null>(null);
   const [likeBusyId, setLikeBusyId] = useState<string | null>(null);
 
- 
+  const openUnlockFromViewer = useCallback(() => {
+    // close menus + viewer first (because viewer is its own Modal on iOS)
+    setViewerMenuOpen(false);
+    setViewerVisible(false);
+  
+    // then show unlock modal on next tick
+    requestAnimationFrame(() => {
+      setTimeout(() => setUnlockVisible(true), 150);
+    });
+  }, []);
+  
 
 
   const [commentLikeBusy, setCommentLikeBusy] = useState<Set<string>>(new Set());
@@ -1401,51 +1440,110 @@ const imageSources = useMemo(
     }
   };
 
-  const onShare = useCallback(async () => {
-    try {
-      const title = post?.title || 'Post';
-      const permalink = post?.permalink || `${WP_BASE}/?p=${postId}`;
-      const current = media?.[index];
-      const mediaUrl = current?.uri;
+  const WP_BASE = 'https://noctimago.com';
 
-      const lines = [
-        title,
-        post?.fields?.event && `Event: ${post.fields.event}`,
-        post?.fields?.location && `Location: ${post.fields.location}`,
-        permalink && `Link: ${permalink}`,
-        mediaUrl && `Media: ${mediaUrl}`,
-      ].filter(Boolean) as string[];
+// 🔗 Deep link base (jo hum share karenge)
+// const APP_LINK_BASE = `${WP_BASE}/app/post`;
 
-      const message = lines.join('\n');
+// 🛒 Play Store link (yaha apna actual package name daalna)
+// same URL jo browser me chal raha hai
+const APP_LINK_BASE = 'https://noctimago.com/?custom_post='; 
+const PLAY_STORE_URL =
+  'https://play.google.com/store/apps/details?id=com.noctimago';
 
-      const payload =
-        Platform.select({
-          ios: { title, message, url: mediaUrl || permalink },
-          android: { title, message },
-          default: { title, message },
-        }) || { title, message };
+const onShare = useCallback(async () => {
+  try {
+    if (!postId) return;
 
-      await Share.share(payload, { dialogTitle: 'Share post' });
+    const title = post?.title || 'Post';
 
-      setHasShared(true);
+    // 👇 final URL: https://noctimago.com/?custom_post=1058
+    const deepLink = `${APP_LINK_BASE}${postId}`;
 
-      if (token) {
-        try {
-          await sharePostApi(postId, token);
-          await notifyPostAuthor({
-            post,
-            action: 'share',
-            token,
-            senderProfile: userprofile,
-          });
-        } catch (e) {
-          console.log('sharePostApi failed:', e);
-        }
+    const lines = [
+      title,
+      post?.fields?.event && `Event: ${post.fields.event}`,
+      post?.fields?.location && `Location: ${post.fields.location}`,
+      '',
+      `Open this post: ${deepLink}`,
+    ].filter(Boolean) as string[];
+
+    const message = lines.join('\n');
+
+    const payload =
+      Platform.select({
+        ios: { title, message, url: deepLink },
+        android: { title, message },
+        default: { title, message },
+      }) || { title, message };
+
+    await Share.share(payload, { dialogTitle: 'Share post' });
+
+    setHasShared(true);
+
+    if (token) {
+      try {
+        await sharePostApi(postId, token);
+        await notifyPostAuthor({
+          post,
+          action: 'share',
+          token,
+          senderProfile: userprofile,
+        });
+      } catch (e) {
+        console.log('sharePostApi failed:', e);
       }
-    } catch {
-      Alert.alert('Share failed', 'Unable to share this post.');
     }
-  }, [post, media, index, postId, token]);
+  } catch (e) {
+    Alert.alert('Share failed', 'Unable to share this post.');
+  }
+}, [postId, post, token, userprofile]);
+
+const reportPost = useCallback(
+  async (reason: string) => {
+    try {
+      await reportPostApi(postId, reason, token);
+      Alert.alert("Reported", "Thanks, we’ve received your report.");
+    } catch (e) {
+      console.log("reportPost error", e);
+      Alert.alert("Error", "Could not send report. Please try again.");
+    }
+  },
+  [postId, token]
+);
+
+const confirmAndReportPost = useCallback(() => {
+  if (!token) {
+    Alert.alert("Sign in required", "You need to log in to report posts.");
+    return;
+  }
+  if (!postId) return;
+
+  Alert.alert(
+    "Report post",
+    "Tell us why you are reporting this post.",
+    [
+      { text: "Cancel", style: "cancel" },
+      {
+        text: "Spam or misleading",
+        onPress: () => reportPost("Spam or misleading"),
+      },
+      {
+        text: "Hate / abusive content",
+        onPress: () => reportPost("Hate / abusive content"),
+      },
+      {
+        text: "Nudity or sexual content",
+        onPress: () => reportPost("Nudity or sexual content"),
+      },
+      {
+        text: "Other",
+        onPress: () => reportPost("Other"),
+      },
+    ]
+  );
+}, [postId, token, reportPost]);
+
   const [viewerMenuOpen, setViewerMenuOpen] = useState(false);
 
   const confirmAndReport = useCallback(
@@ -1538,73 +1636,105 @@ const imageSources = useMemo(
   const [reportingUri, setReportingUri] = useState<string | null>(null);
   const [savingUri, setSavingUri] = useState<string | null>(null);
 
-  const saveImage = useCallback(async (uri: string) => {
-    try {
-      if (!uri || savingUri) return;
-
-      setSavingUri(uri);
-      const encoded = uri.startsWith('http') ? encodeURI(uri) : uri;
-
-      if (Platform.OS === 'android') {
-        const ok = await requestLegacyWriteIfNeeded();
-        if (!ok) {
-          Alert.alert('Permission required', 'Storage permission is needed to save images.');
+  const saveImage = useCallback(
+    async (uri: string) => {
+      try {
+        if (!uri || savingUri) return;
+  
+        setSavingUri(uri);
+        const encoded = uri.startsWith("http") ? uri : encodeURI(uri);
+  
+        if (Platform.OS === "android") {
+          const ok = await requestLegacyWriteIfNeeded();
+          if (!ok) {
+            Alert.alert("Permission required", "Storage permission is needed.");
+            return;
+          }
+        
+          const encoded = uri.startsWith("http") ? encodeURI(uri) : uri;
+        
+          const { fs, MediaCollection } = RNFetchBlob;
+        
+          const ext = encoded.split("?")[0].toLowerCase().endsWith(".png") ? "png" : "jpg";
+          const name = `post_${postId}_${Date.now()}.${ext}`;
+        
+          // ✅ Save into Pictures/Noctimago (Gallery reads this)
+          const folder = `${fs.dirs.PictureDir}/Noctimago`;
+          await fs.mkdir(folder).catch(() => {});
+          const path = `${folder}/${name}`;
+        
+          // ✅ Download file
+          await RNFetchBlob.config({ path, fileCache: true }).fetch("GET", encoded);
+        
+          // ✅ Register in MediaStore (important!)
+          try {
+            await MediaCollection.copyToMediaStore(
+              { name, parentFolder: "Noctimago", mimeType: ext === "png" ? "image/png" : "image/jpeg" },
+              "Image",
+              path
+            );
+          } catch (e) {
+            // fallback: media scan
+            try { await fs.scanFile([{ path }]); } catch {}
+          }
+        
+          Alert.alert("Saved ✅", "Image saved in Gallery.");
           return;
         }
-
-        const { fs } = RNFetchBlob;
-        const folder = `${fs.dirs.PictureDir}/Noctimago`;
-        await fs.mkdir(folder).catch(() => {});
-
-        const name = `post_${postId}_${Date.now()}${
-          (encoded.toLowerCase().includes('.png') && '.png') || '.jpg'
-        }`;
-
-        await RNFetchBlob.config({
-          addAndroidDownloads: {
-            useDownloadManager: true,
-            notification: true,
-            mediaScannable: true,
-            title: name,
-            description: 'Downloading image',
-            mime: encoded.includes('.png') ? 'image/png' : 'image/jpeg',
-            path: `${folder}/${name}`,
-          },
-        }).fetch('GET', encoded);
-
-        Alert.alert('Saved', 'Image saved to your gallery');
-        return;
+        
+  
+        // ------------- iOS path -------------
+        if (!CameraRoll || typeof (CameraRoll as any).save !== "function") {
+          throw new Error("CameraRoll.save not available");
+        }
+  
+        // 1) build local temp path
+        const iosTmpBase = RNFS.TemporaryDirectoryPath.endsWith("/")
+          ? RNFS.TemporaryDirectoryPath
+          : `${RNFS.TemporaryDirectoryPath}/`;
+        const ext = encoded.split("?")[0].toLowerCase().endsWith(".png")
+          ? "png"
+          : "jpg";
+        const fileName = `post_${postId}_${Date.now()}.${ext}`;
+        const toFile = `${iosTmpBase}${fileName}`;
+  
+        // 2) download to that file
+        const resp = await RNFS.downloadFile({
+          fromUrl: encoded,
+          toFile,
+        }).promise;
+  
+        console.log("download resp", resp);
+  
+        if ((resp.statusCode ?? 200) >= 400) {
+          throw new Error(`Download failed (${resp.statusCode})`);
+        }
+  
+        const localUri = toFile.startsWith("file://")
+          ? toFile
+          : `file://${toFile}`;
+  
+        console.log("saving localUri", localUri);
+  
+        // 3) save to Photos (this is where PHPhotosErrorDomain comes from)
+        await CameraRoll.save(localUri, { type: "photo" });
+  
+        // 4) cleanup
+        RNFS.unlink(toFile).catch(() => {});
+        Alert.alert("Saved", "Image saved to your Photos.");
+      } catch (e: any) {
+        console.log("saveImage error =>", e?.message ?? e, e);
+        Alert.alert(
+          "Save failed",
+          e?.message ? String(e.message) : "Could not save the image."
+        );
+      } finally {
+        setSavingUri(null);
       }
-
-      if (!CameraRoll || typeof (CameraRoll as any).save !== 'function') {
-        throw new Error('CameraRoll native module not linked. Run `npx pod-install` and rebuild.');
-      }
-
-      const ext = (() => {
-        const raw = encoded.split('?')[0].split('.').pop() || 'jpg';
-        return raw.length > 5 ? 'jpg' : raw.toLowerCase();
-      })();
-      const fname = `post_${postId}_${Date.now()}.${ext}`;
-
-      const iosTmpBase = RNFS.TemporaryDirectoryPath.endsWith('/')
-        ? RNFS.TemporaryDirectoryPath
-        : `${RNFS.TemporaryDirectoryPath}/`;
-      const toFile = `${iosTmpBase}${fname}`;
-
-      const resp = await RNFS.downloadFile({ fromUrl: encoded, toFile }).promise;
-      if ((resp.statusCode ?? 200) >= 400) throw new Error(`Download failed (${resp.statusCode})`);
-
-      const localUri = toFile.startsWith('file://') ? toFile : `file://${toFile}`;
-      await CameraRoll.save(localUri, { type: 'photo' });
-      RNFS.unlink(toFile).catch(() => {});
-      Alert.alert('Saved', 'Image saved to your Photos.');
-    } catch (e: any) {
-      console.log('saveImage error =>', e?.message ?? e);
-      Alert.alert('Save failed', e?.message ? String(e.message) : 'Could not save the image.');
-    } finally {
-      setSavingUri(null);
-    }
-  }, [postId, savingUri]);
+    },
+    [postId, savingUri]
+  );
+  
   const [savingVideoUri, setSavingVideoUri] = useState<string | null>(null);
 
   const saveVideo = useCallback(
@@ -1618,34 +1748,36 @@ const imageSources = useMemo(
         if (Platform.OS === "android") {
           const ok = await requestLegacyWriteIfNeeded();
           if (!ok) {
-            Alert.alert(
-              "Permission required",
-              "Storage permission is needed to save videos."
-            );
+            Alert.alert("Permission required", "Storage permission is needed.");
             return;
           }
-  
-          const { fs } = RNFetchBlob;
-          const folder = `${fs.dirs.DownloadDir}/Noctimago`;
-          await fs.mkdir(folder).catch(() => {});
-  
+        
+          const encoded = uri.startsWith("http") ? encodeURI(uri) : uri;
+        
+          const { fs, MediaCollection } = RNFetchBlob;
+        
           const name = `post_${postId}_${Date.now()}.mp4`;
-  
-          await RNFetchBlob.config({
-            addAndroidDownloads: {
-              useDownloadManager: true,
-              notification: true,
-              mediaScannable: true,
-              title: name,
-              description: "Downloading video",
-              mime: "video/mp4",
-              path: `${folder}/${name}`,
-            },
-          }).fetch("GET", encoded);
-  
-          Alert.alert("Saved", "Video saved to your downloads.");
+          const folder = `${fs.dirs.MovieDir}/Noctimago`;
+          await fs.mkdir(folder).catch(() => {});
+          const path = `${folder}/${name}`;
+        
+          await RNFetchBlob.config({ path, fileCache: true }).fetch("GET", encoded);
+        
+          // ✅ Register in MediaStore (important!)
+          try {
+            await MediaCollection.copyToMediaStore(
+              { name, parentFolder: "Noctimago", mimeType: "video/mp4" },
+              "Video",
+              path
+            );
+          } catch (e) {
+            try { await fs.scanFile([{ path }]); } catch {}
+          }
+        
+          Alert.alert("Saved ✅", "Video saved in Gallery.");
           return;
         }
+        
   
         // iOS
         if (
@@ -1705,14 +1837,21 @@ const imageSources = useMemo(
   const gatedSaveImage = useCallback(
     (uri: string) => {
       if (!uri) return;
+  
       if (canDownload) {
-        saveImage(uri);
+        saveImage(uri); // ✅ use your working saveImage (or keep saveImageToGallery if you want)
+        return;
+      }
+  
+      if (Platform.OS === "ios" && viewerVisible) {
+        openUnlockFromViewer(); // ✅ key fix
       } else {
         setUnlockVisible(true);
       }
     },
-    [canDownload, saveImage]
+    [canDownload, saveImage, viewerVisible, openUnlockFromViewer]
   );
+  
   const confirmAndReportVideo = useCallback(
     (videoUrl: string) => {
       const uri = videoUrl;
@@ -1812,11 +1951,19 @@ const imageSources = useMemo(
 
       <TText style={styles.headerTitle}>Post</TText>
 
-      <TouchableOpacity onPress={onShare} hitSlop={hit}>
-        <Ionicons name="share-social-outline" size={18} color={COLORS.text} />
-      </TouchableOpacity>
+      <View style={{ flexDirection: "row", alignItems: "center" }}>
+        <TouchableOpacity onPress={onShare} hitSlop={hit} style={{ marginRight: 8 }}>
+          <Ionicons name="share-social-outline" size={18} color={COLORS.text} />
+        </TouchableOpacity>
+
+        {/* 👇 NEW: clearly visible report icon */}
+        <TouchableOpacity onPress={confirmAndReportPost} hitSlop={hit}>
+          <Feather name="flag" size={20} color="#ff5c5c" />
+        </TouchableOpacity>
+      </View>
     </View>
   );
+
 
   /* ----------------- Adapters for CommentsModal ----------------- */
 
@@ -1861,9 +2008,13 @@ async function notifyCommentAuthorReply({
 
     if (!receiverId || !token) return;
     if (receiverId === senderId) return; // don't notify self
+    let tokenToUse
 
+    if (!tokenToUse) {
+      tokenToUse = await getReceiverTokenFromFirestore(receiverId);
+    }
     const payload = JSON.stringify({
-      UserToken: "",
+      UserToken: tokenToUse,
       message: `${senderProfile?.username || "Someone"} replied to your comment`,
       msgtitle: "New reply to your comment",
       User_PkeyID: senderProfile?.ID, // sender
@@ -1911,9 +2062,13 @@ async function notifyCommentAuthorLike({
 
     if (!receiverId || !token) return;
     if (receiverId === senderId) return; // don't notify self
+    let tokenToUse
 
+    if (!tokenToUse) {
+      tokenToUse = await getReceiverTokenFromFirestore(receiverId);
+    }
     const payload = JSON.stringify({
-      UserToken: "",
+      UserToken: tokenToUse,
       message: `${senderProfile?.username || "Someone"} liked your comment`,
       msgtitle: "New like on your comment",
       User_PkeyID: senderProfile?.ID, // sender
@@ -1993,8 +2148,13 @@ const onSendFromModal = useCallback(
         Number(post.author_id) !== Number(userprofile.ID)
       ) {
         try {
+          let tokenToUse
+
+          if (!tokenToUse) {
+            tokenToUse = await getReceiverTokenFromFirestore(post?.author_id);
+          }
           const payload = JSON.stringify({
-            UserToken: "",
+            UserToken: tokenToUse,
             message: `${
               userprofile?.username || "Someone"
             } commented on your post`,
@@ -2822,6 +2982,42 @@ const styles = StyleSheet.create({
   },
   viewerFooterTxt: { color: '#fff', fontWeight: '700' },
 });
+// report post helper
+async function reportPostApi(
+  postId: string,
+  reason: string,
+  token?: string
+) {
+  console.log("🔔  report submitted", { postId, reason });
+  return 0
+  const payload = {
+    post_id: Number(postId),
+    reason,
+  };
+
+  console.log("📤 Report POST URL:", `${WP_BASE}/wp-json/app/v1/report_post`);
+  console.log("📤 Report POST Body:", JSON.stringify(payload, null, 2));
+
+  // const res = await fetch(`${WP_BASE}/wp-json/app/v1/report_post`, {
+  //   method: "POST",
+  //   headers: {
+  //     "Content-Type": "application/json",
+  //     ...(token ? { Authorization: `Bearer ${token}` } : {}),
+  //   },
+  //   body: JSON.stringify(payload),
+  // });
+
+  // const raw = await res.text();
+  // let json: any = {};
+  // try {
+  //   json = JSON.parse(raw);
+  // } catch {}
+
+  // if (!res.ok) {
+  //   throw new Error(json?.message || raw || `HTTP ${res.status}`);
+  // }
+  // return json;
+}
 
 // report image helper
 async function reportImageApi(postId: string, imageUrl: string, reason: string, token?: string) {
