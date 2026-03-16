@@ -6,10 +6,10 @@ import { TestIds } from 'react-native-google-mobile-ads';
 
 export const BANNER_AD_ID = __DEV__
   ? TestIds.BANNER
-  : 'ca-app-pub-2847186072494111/3698240885';
+  : 'ca-app-pub-2847186072494111/1323165779';
 
 export const INTERSTITIAL_AD_ID = __DEV__
   ? TestIds.INTERSTITIAL
-  : 'ca-app-pub-2847186072494111/5687551304';
+  : 'ca-app-pub-2847186072494111/3379421192';
 
 // add more ids (rewarded, native, etc.) as needed
